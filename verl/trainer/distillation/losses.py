@@ -161,13 +161,16 @@ def compute_topk_loss(
         case _:
             raise NotImplementedError(f"Unsupported strategy: {config.strategy=}")
 
-    outputs = distillation_loss_fn(
-        student_logits=student_logits,
-        teacher_topk_log_probs=data["teacher_logprobs"],
-        teacher_topk_ids=data["teacher_ids"],
-        config=distillation_config,
-        data_format=data_format,
-    )
+    distillation_loss_kwargs = {
+        "student_logits": student_logits,
+        "teacher_topk_log_probs": data["teacher_logprobs"],
+        "teacher_topk_ids": data["teacher_ids"],
+        "config": distillation_config,
+        "data_format": data_format,
+    }
+    if config.strategy in {"fsdp", "veomni"}:
+        distillation_loss_kwargs["data"] = data
+    outputs = distillation_loss_fn(**distillation_loss_kwargs)
 
     expected_shape = student_logits.shape[:2]
     for k, v in outputs.items():
@@ -261,9 +264,6 @@ def distillation_loss(
     response_mask = data["response_mask"]
     loss_agg_mode = config.loss_agg_mode
 
-    distillation_metrics.update(
-        compute_distillation_loss_range(distillation_losses=distillation_losses, response_mask=response_mask)
-    )
     if loss_config.loss_max_clamp is not None:
         # clamping min is for k1 loss which can be negative
         distillation_losses = distillation_losses.clamp(min=-loss_config.loss_max_clamp, max=loss_config.loss_max_clamp)
@@ -341,6 +341,30 @@ def compute_topk_kl(
         "distillation/teacher_mass_min": Metric(AggregationType.MIN, teacher_mass.min()),
         "distillation/teacher_mass_max": Metric(AggregationType.MAX, teacher_mass.max()),
     }
+    optional_monitoring_specs = {
+        "topk_overlap": ("mean", "min", "max"),
+        "topk_l1": ("mean",),
+        "student_teacher_top1_prob": ("mean",),
+        "teacher_top1_prob": ("mean",),
+        "teacher_top1_prob_gap": ("mean",),
+        "student_argmax_teacher_top1_match": ("mean",),
+        "student_argmax_in_teacher_topk": ("mean",),
+    }
+    for name, reductions in optional_monitoring_specs.items():
+        if name not in model_output:
+            continue
+        values = no_padding_2_padding(model_output[name], data)
+        assert values.shape == response_mask_bool.shape, (
+            f"Expected shape {response_mask_bool.shape}, got {values.shape} for {name=}."
+        )
+        values = values[response_mask_bool].float()
+        metric_name = f"distillation/{name}"
+        if "mean" in reductions:
+            distillation_metrics[metric_name] = Metric(AggregationType.MEAN, values.mean())
+        if "min" in reductions:
+            distillation_metrics[f"{metric_name}_min"] = Metric(AggregationType.MIN, values.min())
+        if "max" in reductions:
+            distillation_metrics[f"{metric_name}_max"] = Metric(AggregationType.MAX, values.max())
 
     # Due to use of top-k, student and teacher distributions don't sum to 1 -> divergences can be negative.
     distillation_losses = distillation_losses.clamp_min(0.0)

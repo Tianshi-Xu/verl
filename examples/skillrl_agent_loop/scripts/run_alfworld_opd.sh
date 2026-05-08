@@ -13,6 +13,7 @@ export VERL_ROOT="$verl_root"
 export SKILLRL_ROOT="$skillrl_root"
 export PYTHONPATH="$verl_root:$skillrl_root"
 export HYDRA_FULL_ERROR=1
+export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 export RAY_DISABLE_GPU_METRICS=1
 export RAY_DISABLE_DASHBOARD=1
 export RAY_DEDUP_LOGS=1
@@ -31,7 +32,7 @@ nnodes=1
 
 train_data_size=-1
 val_data_size=-1
-train_batch_size=63
+train_batch_size=28
 
 max_steps=50
 max_prompt_length=4096
@@ -50,10 +51,11 @@ teacher_task_specific_top_k=2
 teacher_mistakes_top_k=2
 
 distillation_loss_mode=backward_kl_topk
-distillation_topk=64
+distillation_topk=128
 distillation_use_policy_gradient=false
 distillation_loss_max_clamp=10.0
 distillation_log_prob_min_clamp=-10.0
+distillation_use_response_mask_for_topk_kl=true
 
 actor_lr=1e-6
 rollout_gpu_memory_utilization=0.80
@@ -114,12 +116,10 @@ model=(
 
 actor=(
     actor_rollout_ref.actor.optim.lr="$actor_lr"
-    actor_rollout_ref.actor.ppo_mini_batch_size="$train_batch_size"
+    actor_rollout_ref.actor.ppo_mini_batch_size=28
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu="$max_token_len_per_gpu"
-    actor_rollout_ref.actor.ppo_infer_max_token_len_per_gpu="$max_token_len_per_gpu"
     actor_rollout_ref.actor.use_dynamic_bsz=True
     actor_rollout_ref.actor.use_kl_loss=False
-    actor_rollout_ref.actor.strategy=fsdp2
     actor_rollout_ref.actor.fsdp_config.dtype=float16
     actor_rollout_ref.actor.fsdp_config.param_offload=True
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
@@ -135,6 +135,7 @@ rollout=(
     actor_rollout_ref.rollout.calculate_log_probs=True
     actor_rollout_ref.rollout.tensor_model_parallel_size="$rollout_tensor_parallel_size"
     actor_rollout_ref.rollout.max_model_len="$max_model_len"
+    actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=True
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu="$max_token_len_per_gpu"
 )
@@ -170,6 +171,7 @@ distillation=(
     distillation.distillation_loss.use_policy_gradient="$distillation_use_policy_gradient"
     distillation.distillation_loss.loss_max_clamp="$distillation_loss_max_clamp"
     distillation.distillation_loss.log_prob_min_clamp="$distillation_log_prob_min_clamp"
+    distillation.distillation_loss.use_response_mask_for_topk_kl="$distillation_use_response_mask_for_topk_kl"
 )
 
 trainer=(

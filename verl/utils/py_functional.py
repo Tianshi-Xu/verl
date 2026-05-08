@@ -166,12 +166,13 @@ def union_two_dict(dict1: dict, dict2: dict):
     return dict1
 
 
-def rename_dict(data: dict, prefix: str = "") -> dict:
+def rename_dict(data: dict, prefix: str = "", skip_prefixes: tuple[str, ...] = ()) -> dict:
     """Add a prefix to all the keys in the data dict if it's name is not started with prefix
 
     Args:
         data: a dictionary
         prefix: prefix
+        skip_prefixes: prefixes that should be left unchanged
 
     Returns:
         dictionary with modified name
@@ -179,7 +180,10 @@ def rename_dict(data: dict, prefix: str = "") -> dict:
     """
     new_data = {}
     for key, val in data.items():
-        new_key = f"{prefix}{key}" if not key.startswith(prefix) else key
+        if key.startswith(prefix) or any(key.startswith(skip_prefix) for skip_prefix in skip_prefixes):
+            new_key = key
+        else:
+            new_key = f"{prefix}{key}"
         new_data[new_key] = val
     return new_data
 

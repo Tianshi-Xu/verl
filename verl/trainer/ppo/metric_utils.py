@@ -135,9 +135,12 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         score_mean = torch.mean(non_aborted_sequence_score).detach().item()
         score_max = torch.max(non_aborted_sequence_score).detach().item()
         score_min = torch.min(non_aborted_sequence_score).detach().item()
+        score_correct = non_aborted_sequence_score > 0
+        score_accuracy = score_correct.float().mean().detach().item()
     else:
         logger.warning("All samples are aborted, returning default score metrics")
         score_mean = score_max = score_min = float("nan")
+        score_accuracy = float("nan")
 
     if non_aborted_sequence_reward.numel() > 0:
         reward_mean = torch.mean(non_aborted_sequence_reward).detach().item()
@@ -216,6 +219,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "critic/score/mean": score_mean,
         "critic/score/max": score_max,
         "critic/score/min": score_min,
+        "critic/accuracy": score_accuracy,
         # reward
         "critic/rewards/mean": reward_mean,
         "critic/rewards/max": reward_max,
@@ -264,6 +268,24 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         metrics["tool_call_counts/min"] = tool_call_counts.min()
         metrics["tool_call_counts/max"] = tool_call_counts.max()
         metrics["tool_call_counts/mean"] = tool_call_counts.mean()
+
+    if "tool_call_success_count" in batch.non_tensor_batch and "tool_call_total_count" in batch.non_tensor_batch:
+        tool_call_success_count = np.asarray(batch.non_tensor_batch["tool_call_success_count"], dtype=np.float64)
+        tool_call_total_count = np.asarray(batch.non_tensor_batch["tool_call_total_count"], dtype=np.float64)
+        tool_call_success_count_sum = float(tool_call_success_count.sum())
+        tool_call_total_count_sum = float(tool_call_total_count.sum())
+        metrics["tool_call/success_rate"] = (
+            tool_call_success_count_sum / tool_call_total_count_sum if tool_call_total_count_sum > 0 else 0.0
+        )
+        metrics["tool_call/success_count"] = tool_call_success_count_sum
+        metrics["tool_call/total_count"] = tool_call_total_count_sum
+        if "missing_tool_call_count" in batch.non_tensor_batch:
+            missing_tool_call_count = np.asarray(batch.non_tensor_batch["missing_tool_call_count"], dtype=np.float64)
+            missing_tool_call_count_sum = float(missing_tool_call_count.sum())
+            metrics["tool_call/missing_rate"] = (
+                missing_tool_call_count_sum / tool_call_total_count_sum if tool_call_total_count_sum > 0 else 0.0
+            )
+            metrics["tool_call/missing_count"] = missing_tool_call_count_sum
 
     return metrics
 

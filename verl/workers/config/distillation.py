@@ -50,6 +50,9 @@ class DistillationLossConfig(BaseConfig):
     log_prob_min_clamp (float, optional):
         Minimum value to clamp log probabilities for stability, e.g., log q - log p where p or q are
         very close to zero. If None, no clamping is applied.
+    use_response_mask_for_topk_kl (bool):
+        Whether to compute top-k KL only on response_mask=1 tokens. This avoids computing
+        top-k KL for prompts, environment observations, tool responses, and padding.
     use_policy_gradient (bool):
         Whether to incorporate distillation loss as a reward, as done
         by https://thinkingmachines.ai/blog/on-policy-distillation/. Recommended to use loss_mode=k1.
@@ -73,6 +76,7 @@ class DistillationLossConfig(BaseConfig):
     distillation_loss_coef: float = 1.0
     loss_max_clamp: Optional[float] = 10.0
     log_prob_min_clamp: Optional[float] = -10.0
+    use_response_mask_for_topk_kl: bool = False
 
     use_policy_gradient: bool = True
     policy_loss_mode: str = "vanilla"

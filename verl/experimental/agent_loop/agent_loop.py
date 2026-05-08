@@ -953,7 +953,10 @@ class AgentLoopWorker:
         response_teacher_ids = teacher_ids[start:end]
         response_teacher_logprobs = teacher_logprobs[start:end]
 
-        prompt_rows = student_prompt_length
+        # Align teacher rows to student logits rows. Row i contains logprobs for
+        # token i + 1, so the first response token is trained from row
+        # student_prompt_length - 1.
+        prompt_rows = max(student_prompt_length - 1, 0)
         pad_shape = (prompt_rows, teacher_ids.shape[-1])
         prompt_teacher_ids = torch.full(
             pad_shape, self.tokenizer.pad_token_id, dtype=teacher_ids.dtype, device=teacher_ids.device
@@ -961,9 +964,16 @@ class AgentLoopWorker:
         prompt_teacher_logprobs = torch.zeros(
             pad_shape, dtype=teacher_logprobs.dtype, device=teacher_logprobs.device
         )
+        trailing_shape = (1, teacher_ids.shape[-1])
+        trailing_teacher_ids = torch.full(
+            trailing_shape, self.tokenizer.pad_token_id, dtype=teacher_ids.dtype, device=teacher_ids.device
+        )
+        trailing_teacher_logprobs = torch.zeros(
+            trailing_shape, dtype=teacher_logprobs.dtype, device=teacher_logprobs.device
+        )
         return (
-            torch.cat([prompt_teacher_ids, response_teacher_ids], dim=0),
-            torch.cat([prompt_teacher_logprobs, response_teacher_logprobs], dim=0),
+            torch.cat([prompt_teacher_ids, response_teacher_ids, trailing_teacher_ids], dim=0),
+            torch.cat([prompt_teacher_logprobs, response_teacher_logprobs, trailing_teacher_logprobs], dim=0),
         )
 
     def _postprocess(

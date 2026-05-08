@@ -39,6 +39,10 @@ distillation_loss:
   # Optional min clamp value for log probabilities for stability, e.g., log q - log p where p or q are very close to zero.
   log_prob_min_clamp: null
 
+  # Whether to compute top-k KL only on response_mask=1 tokens.
+  # This skips prompts, environment observations, tool responses, and padding in top-k KL computation.
+  use_response_mask_for_topk_kl: false
+
   # Whether to incorporate distillation loss as a reward.
   use_policy_gradient: false
 
