@@ -28,9 +28,11 @@ and is designed to be fully replaceable by other agent frameworks such as:
 """
 
 import asyncio
+import copy
 import logging
 import os
 import random
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 from uuid import uuid4
@@ -60,6 +62,7 @@ from verl.utils.rollout_trace import (
 )
 from verl.utils.tokenizer import normalize_token_ids
 from verl.workers.config import (
+    DistillationConfig,
     HFModelConfig,
     RolloutConfig,
 )
@@ -74,9 +77,16 @@ DEFAULT_ROUTING_CACHE_SIZE = 10000
 class AgentLoopMetrics(BaseModel):
     """Agent loop performance metrics."""
 
+    agent_run: float = 0.0
+    agent_postprocess: float = 0.0
     generate_sequences: float = 0.0
     tool_calls: float = 0.0
     compute_score: float = 0.0
+    compute_teacher_logprobs: float = 0.0
+    teacher_output_align: float = 0.0
+    teacher_output_pad: float = 0.0
+    teacher_topk_width: int = 0
+    teacher_sequence_length: int = 0
     num_preempted: int = -1  # -1 means not available
 
 
@@ -361,17 +371,23 @@ class AgentLoopWorker:
         self.dataset_cls = get_dataset_class(config.data)
         self.tokenizer = self.model_config.tokenizer
         self.processor = self.model_config.processor
+        self.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
 
         # Online policy distillation
         self.distillation_enabled = is_distillation_enabled(config.distillation)
+        self.distillation_config: Optional[DistillationConfig] = None
+        self.teacher_skill_memory = None
+        self._teacher_prompt_template: Optional[str] = None
         if self.distillation_enabled:
             from verl.experimental.teacher_loop.teacher_manager import AsyncTeacherLLMServerManager
 
+            self.distillation_config = omega_conf_to_dataclass(config.distillation)
             self.teacher_key: str = config.distillation.teacher_key
             self.teacher_server_manager = AsyncTeacherLLMServerManager(
                 config=config,
                 teacher_client=teacher_client,
             )
+            self.teacher_skill_memory = self._build_teacher_skill_memory()
 
         # Load custom agent loop implementations from config path
         agent_loop_config_path = self.rollout_config.agent.agent_loop_config_path
@@ -464,15 +480,23 @@ class AgentLoopWorker:
         for i in range(len(batch)):
             trace_this_sample = i in traced_indices
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
+            kwargs["_worker_slot"] = i
             tasks.append(
                 asyncio.create_task(
                     self._run_agent_loop(sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
                 )
             )
+        t_agent_tasks = time.perf_counter()
         outputs = await asyncio.gather(*tasks)
+        agent_tasks_time = time.perf_counter() - t_agent_tasks
 
-        output = self._postprocess(
-            outputs, input_non_tensor_batch=batch.non_tensor_batch, validate=batch.meta_info.get("validate", False)
+        t_postprocess = time.perf_counter()
+        output = self._postprocess(outputs, input_non_tensor_batch=batch.non_tensor_batch)
+        output.meta_info.setdefault("timing", {}).update(
+            {
+                "agent_loop/worker_agent_tasks": agent_tasks_time,
+                "agent_loop/worker_postprocess": time.perf_counter() - t_postprocess,
+            }
         )
         return output
 
@@ -507,8 +531,13 @@ class AgentLoopWorker:
                 dataset_cls=self.dataset_cls,
                 data_config=DictConfigWrap(self.config.data),
             )
+            t_agent_run = time.perf_counter()
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
-            return await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
+            output.metrics.agent_run = time.perf_counter() - t_agent_run
+            t_postprocess = time.perf_counter()
+            internal_output = await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
+            internal_output.metrics.agent_postprocess = time.perf_counter() - t_postprocess
+            return internal_output
 
     async def _agent_loop_postprocess(self, output, validate, **kwargs) -> _InternalAgentLoopOutput:
         """Perform post-processing operations on the output of each individual agent loop."""
@@ -616,13 +645,16 @@ class AgentLoopWorker:
             position_ids=position_ids,
             kwargs=kwargs,
         )
-        await self._compute_teacher_logprobs(
-            output,
-            prompt_ids=output.prompt_ids,
-            response_ids=output.response_ids,
-            validate=validate,
-            sample_kwargs=kwargs,
-        )
+        teacher_timing = {}
+        with simple_timer("compute_teacher_logprobs", teacher_timing):
+            await self._compute_teacher_logprobs(
+                output,
+                prompt_ids=output.prompt_ids,
+                response_ids=output.response_ids,
+                validate=validate,
+                sample_kwargs=kwargs,
+            )
+        output.metrics.compute_teacher_logprobs = teacher_timing["compute_teacher_logprobs"]
         teacher_ids, teacher_logprobs = (
             output.extra_fields.pop("teacher_ids", None),
             output.extra_fields.pop("teacher_logprobs", None),
@@ -631,15 +663,20 @@ class AgentLoopWorker:
             # TODO(wuxibin): remove padding and use tensordict.
             from verl.experimental.teacher_loop.teacher_manager import _pad_teacher_outputs
 
-            teacher_ids, teacher_logprobs = _pad_teacher_outputs(
-                teacher_ids,
-                teacher_logprobs,
-                prompt_width=prompt_output["input_ids"].shape[1],
-                response_width=response_output["input_ids"].shape[1],
-                prompt_length=len(output.prompt_ids),
-                response_length=len(output.response_ids),
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
+            output.metrics.teacher_sequence_length = int(teacher_ids.shape[0])
+            output.metrics.teacher_topk_width = int(teacher_ids.shape[-1]) if teacher_ids.ndim > 1 else 1
+            teacher_pad_timing = {}
+            with simple_timer("teacher_output_pad", teacher_pad_timing):
+                teacher_ids, teacher_logprobs = _pad_teacher_outputs(
+                    teacher_ids,
+                    teacher_logprobs,
+                    prompt_width=prompt_output["input_ids"].shape[1],
+                    response_width=response_output["input_ids"].shape[1],
+                    prompt_length=len(output.prompt_ids),
+                    response_length=len(output.response_ids),
+                    pad_token_id=self.tokenizer.pad_token_id,
+                )
+            output.metrics.teacher_output_pad = teacher_pad_timing["teacher_output_pad"]
 
         return _InternalAgentLoopOutput(
             prompt_ids=prompt_output["input_ids"],
@@ -775,19 +812,164 @@ class AgentLoopWorker:
                 if routing_value is not None:
                     # Non-tensor batch values arrive as 0-d numpy objects / arrays; normalize to Python.
                     routing_key = routing_value.item() if hasattr(routing_value, "item") else routing_value
+            teacher_prompt_ids = self._build_teacher_prompt_ids(output, prompt_ids)
             teacher_ids, teacher_logprobs = await self.teacher_server_manager.compute_teacher_logprobs_single(
-                sequence_ids=prompt_ids + response_ids,
+                sequence_ids=teacher_prompt_ids + response_ids,
                 multi_modal_data=output.multi_modal_data,
                 routing_key=routing_key,
             )
+            if teacher_prompt_ids != prompt_ids:
+                align_timing = {}
+                with simple_timer("teacher_output_align", align_timing):
+                    teacher_ids, teacher_logprobs = self._align_custom_teacher_outputs(
+                        teacher_ids=teacher_ids,
+                        teacher_logprobs=teacher_logprobs,
+                        student_prompt_length=len(prompt_ids),
+                        teacher_prompt_length=len(teacher_prompt_ids),
+                        response_length=len(response_ids),
+                    )
+                output.metrics.teacher_output_align = align_timing["teacher_output_align"]
             output.extra_fields["teacher_ids"] = teacher_ids
             output.extra_fields["teacher_logprobs"] = teacher_logprobs
+
+    def _build_teacher_skill_memory(self):
+        if self.distillation_config is None:
+            return None
+        teacher_prompt = self.distillation_config.teacher_prompt
+        skill_json_path = teacher_prompt.skill_json_path
+        if not skill_json_path:
+            return None
+
+        from recipe.skillrl_agent_loop.skill_memory import StaticSkills
+
+        return StaticSkills(
+            skill_json_path,
+            top_k=teacher_prompt.skill_top_k,
+            task_specific_top_k=teacher_prompt.task_specific_top_k,
+            mistakes_top_k=teacher_prompt.mistakes_top_k,
+        )
+
+    def _build_teacher_prompt_ids(self, output: AgentLoopOutput, prompt_ids: list[int]) -> list[int]:
+        if self.distillation_config is None:
+            return prompt_ids
+        teacher_prompt = self.distillation_config.teacher_prompt
+        if teacher_prompt.mode == "same_as_student":
+            return prompt_ids
+
+        initial_messages = self._extract_initial_messages(output)
+        if not initial_messages:
+            logger.warning("Teacher prompt mode %s requested but openai_messages is unavailable.", teacher_prompt.mode)
+            return prompt_ids
+
+        if teacher_prompt.mode == "skill_injected":
+            teacher_messages = self._inject_teacher_skills(initial_messages)
+        elif teacher_prompt.mode == "custom_template":
+            teacher_messages = self._render_teacher_template(initial_messages)
+        else:
+            return prompt_ids
+
+        tokenized_prompt = apply_chat_template(
+            self.tokenizer,
+            teacher_messages,
+            tools=output.extra_fields.get("tool_schemas"),
+            add_generation_prompt=True,
+            tokenize=True,
+            **self.apply_chat_template_kwargs,
+        )
+        return normalize_token_ids(tokenized_prompt)
+
+    def _extract_initial_messages(self, output: AgentLoopOutput) -> list[dict[str, Any]]:
+        messages = output.extra_fields.get("openai_messages") or output.extra_fields.get("messages")
+        if isinstance(messages, str):
+            return []
+        initial_messages = []
+        for message in messages or []:
+            if message.get("role") == "assistant":
+                break
+            if message.get("role") in {"system", "user"}:
+                initial_messages.append(copy.deepcopy(message))
+        return initial_messages
+
+    def _inject_teacher_skills(self, initial_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        teacher_messages = copy.deepcopy(initial_messages)
+        skills = self._format_teacher_skills(teacher_messages)
+        if not skills:
+            return teacher_messages
+        skill_section = f"## Retrieved Relevant Experience\n\n{skills}"
+        for message in teacher_messages:
+            if message.get("role") == "system":
+                content = str(message.get("content", "")).strip()
+                message["content"] = f"{content}\n\n{skill_section}" if content else skill_section
+                return teacher_messages
+        teacher_messages.insert(0, {"role": "system", "content": skill_section})
+        return teacher_messages
+
+    def _render_teacher_template(self, initial_messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+        teacher_prompt = self.distillation_config.teacher_prompt
+        if self._teacher_prompt_template is None:
+            with open(teacher_prompt.template_path, encoding="utf-8") as f:
+                self._teacher_prompt_template = f.read()
+        system_prompt = ""
+        for message in initial_messages:
+            if message.get("role") == "system":
+                system_prompt = str(message.get("content", ""))
+                break
+        task = self._extract_teacher_task(initial_messages)
+        skills = self._format_teacher_skills(initial_messages)
+        content = self._teacher_prompt_template.format(system_prompt=system_prompt, task=task, skills=skills)
+        return [{"role": "user", "content": content}]
+
+    def _format_teacher_skills(self, initial_messages: list[dict[str, Any]]) -> str:
+        if self.teacher_skill_memory is None:
+            return ""
+        task = self._extract_teacher_task(initial_messages)
+        if not task:
+            return ""
+        return self.teacher_skill_memory.format(task)
+
+    def _extract_teacher_task(self, initial_messages: list[dict[str, Any]]) -> str:
+        for message in initial_messages:
+            if message.get("role") != "user":
+                continue
+            content = str(message.get("content", ""))
+            marker = "Your task is to:"
+            if marker in content:
+                return content.split(marker, 1)[1].strip()
+            return content.strip()
+        return ""
+
+    def _align_custom_teacher_outputs(
+        self,
+        teacher_ids: torch.Tensor,
+        teacher_logprobs: torch.Tensor,
+        student_prompt_length: int,
+        teacher_prompt_length: int,
+        response_length: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # Teacher prompt_logprobs skip the first input token and append one trailing dummy row.
+        # The first response token is therefore scored at prompt_length - 1.
+        start = max(teacher_prompt_length - 1, 0)
+        end = start + response_length
+        response_teacher_ids = teacher_ids[start:end]
+        response_teacher_logprobs = teacher_logprobs[start:end]
+
+        prompt_rows = student_prompt_length
+        pad_shape = (prompt_rows, teacher_ids.shape[-1])
+        prompt_teacher_ids = torch.full(
+            pad_shape, self.tokenizer.pad_token_id, dtype=teacher_ids.dtype, device=teacher_ids.device
+        )
+        prompt_teacher_logprobs = torch.zeros(
+            pad_shape, dtype=teacher_logprobs.dtype, device=teacher_logprobs.device
+        )
+        return (
+            torch.cat([prompt_teacher_ids, response_teacher_ids], dim=0),
+            torch.cat([prompt_teacher_logprobs, response_teacher_logprobs], dim=0),
+        )
 
     def _postprocess(
         self,
         inputs: list[_InternalAgentLoopOutput],
         input_non_tensor_batch: dict | None = None,
-        validate: bool = False,
     ) -> DataProto:
         """Process the padded outputs from _run_agent_loop and combine them into a batch."""
         # Convert lists back to tensors and stack them to create a batch.
@@ -803,8 +985,12 @@ class AgentLoopWorker:
         if inputs[0].routed_experts is not None:
             optional_outputs["routed_experts"] = torch.cat([input.routed_experts for input in inputs], dim=0)
         if inputs[0].teacher_logprobs is not None and inputs[0].teacher_ids is not None:
+            t_teacher_cat = time.perf_counter()
             optional_outputs["teacher_logprobs"] = torch.cat([input.teacher_logprobs for input in inputs], dim=0)
             optional_outputs["teacher_ids"] = torch.cat([input.teacher_ids for input in inputs], dim=0)
+            teacher_cat_time = time.perf_counter() - t_teacher_cat
+        else:
+            teacher_cat_time = 0.0
         batch = TensorDict(
             {
                 "prompts": prompt_ids,  # [bsz, prompt_length]
@@ -869,6 +1055,8 @@ class AgentLoopWorker:
             meta_info = {"metrics": metrics, "reward_extra_keys": reward_extra_keys}
         else:
             meta_info = {"metrics": metrics}
+        if teacher_cat_time:
+            meta_info["timing"] = {"agent_loop/teacher_tensor_cat": teacher_cat_time}
 
         return DataProto(
             batch=batch,
@@ -967,46 +1155,97 @@ class AgentLoopManager:
             DataProto: Output batch.
         """
         chunkes = prompts.chunk(len(self.agent_loop_workers))
+        t_worker_rpc = time.perf_counter()
         outputs = await asyncio.gather(
             *[
                 worker.generate_sequences.remote(chunk)
                 for worker, chunk in zip(self.agent_loop_workers, chunkes, strict=True)
             ]
         )
+        worker_rpc_time = time.perf_counter() - t_worker_rpc
+        worker_timings = [output.meta_info.pop("timing", {}) for output in outputs]
+        t_concat = time.perf_counter()
         output = DataProto.concat(outputs)
+        manager_concat_time = time.perf_counter() - t_concat
 
         # calculate performance metrics
         metrics = [output.meta_info.pop("metrics") for output in outputs]  # List[List[Dict[str, str]]]
         timing = self._performance_metrics(metrics, output)
+        timing["agent_loop/manager_worker_rpc"] = worker_rpc_time
+        timing["agent_loop/manager_concat"] = manager_concat_time
+        worker_timing_keys = sorted({key for worker_timing in worker_timings for key in worker_timing})
+        for key in worker_timing_keys:
+            values = [worker_timing.get(key, 0.0) for worker_timing in worker_timings]
+            timing[f"{key}/max"] = max(values)
+            timing[f"{key}/mean"] = float(np.mean(values))
+        if "teacher_logprobs" in output.batch:
+            teacher_shape = tuple(output.batch["teacher_logprobs"].shape)
+            print(
+                "[OPD timing] "
+                f"worker_rpc={worker_rpc_time:.2f}s "
+                f"manager_concat={manager_concat_time:.2f}s "
+                f"teacher_compute_mean={timing.get('agent_loop/compute_teacher_logprobs/mean', 0.0):.2f}s "
+                f"teacher_compute_max={timing.get('agent_loop/compute_teacher_logprobs/max', 0.0):.2f}s "
+                f"teacher_pad_mean={timing.get('agent_loop/teacher_output_pad/mean', 0.0):.2f}s "
+                f"worker_postprocess_max={timing.get('agent_loop/worker_postprocess/max', 0.0):.2f}s "
+                f"worker_teacher_cat_max={timing.get('agent_loop/teacher_tensor_cat/max', 0.0):.2f}s "
+                f"teacher_shape={teacher_shape}",
+                flush=True,
+            )
 
-        output.meta_info = {"timing": timing, **outputs[0].meta_info}
+        meta_info = dict(outputs[0].meta_info)
+        meta_info.pop("timing", None)
+        output.meta_info = {"timing": timing, **meta_info}
         return output
 
     def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
         timing = {}
-        t_generate_sequences = np.array([metric["generate_sequences"] for chunk in metrics for metric in chunk])
-        t_tool_calls = np.array([metric["tool_calls"] for chunk in metrics for metric in chunk])
-        t_compute_score = np.array([metric["compute_score"] for chunk in metrics for metric in chunk])
-        num_preempted = np.array([metric["num_preempted"] for chunk in metrics for metric in chunk])
+        flat_metrics = [metric for chunk in metrics for metric in chunk]
+        t_generate_sequences = np.array([metric["generate_sequences"] for metric in flat_metrics])
+        t_tool_calls = np.array([metric["tool_calls"] for metric in flat_metrics])
+        t_compute_score = np.array([metric["compute_score"] for metric in flat_metrics])
+        t_compute_teacher_logprobs = np.array([metric.get("compute_teacher_logprobs", 0.0) for metric in flat_metrics])
+        t_teacher_output_align = np.array([metric.get("teacher_output_align", 0.0) for metric in flat_metrics])
+        t_teacher_output_pad = np.array([metric.get("teacher_output_pad", 0.0) for metric in flat_metrics])
+        t_agent_run = np.array([metric.get("agent_run", 0.0) for metric in flat_metrics])
+        t_agent_postprocess = np.array([metric.get("agent_postprocess", 0.0) for metric in flat_metrics])
+        teacher_topk_width = np.array([metric.get("teacher_topk_width", 0) for metric in flat_metrics])
+        teacher_sequence_length = np.array([metric.get("teacher_sequence_length", 0) for metric in flat_metrics])
+        num_preempted = np.array([metric["num_preempted"] for metric in flat_metrics])
+
+        def add_stats(name: str, values: np.ndarray):
+            timing[f"agent_loop/{name}/min"] = values.min()
+            timing[f"agent_loop/{name}/max"] = values.max()
+            timing[f"agent_loop/{name}/mean"] = values.mean()
+
         timing["agent_loop/num_preempted/min"] = num_preempted.min()
         timing["agent_loop/num_preempted/max"] = num_preempted.max()
         timing["agent_loop/num_preempted/mean"] = num_preempted.mean()
-        timing["agent_loop/generate_sequences/min"] = t_generate_sequences.min()
-        timing["agent_loop/generate_sequences/max"] = t_generate_sequences.max()
-        timing["agent_loop/generate_sequences/mean"] = t_generate_sequences.mean()
-        timing["agent_loop/tool_calls/min"] = t_tool_calls.min()
-        timing["agent_loop/tool_calls/max"] = t_tool_calls.max()
-        timing["agent_loop/tool_calls/mean"] = t_tool_calls.mean()
-        timing["agent_loop/compute_score/min"] = t_compute_score.min()
-        timing["agent_loop/compute_score/max"] = t_compute_score.max()
-        timing["agent_loop/compute_score/mean"] = t_compute_score.mean()
+        add_stats("agent_run", t_agent_run)
+        add_stats("agent_postprocess", t_agent_postprocess)
+        add_stats("generate_sequences", t_generate_sequences)
+        add_stats("tool_calls", t_tool_calls)
+        add_stats("compute_score", t_compute_score)
+        add_stats("compute_teacher_logprobs", t_compute_teacher_logprobs)
+        add_stats("teacher_output_align", t_teacher_output_align)
+        add_stats("teacher_output_pad", t_teacher_output_pad)
+        add_stats("teacher_topk_width", teacher_topk_width)
+        add_stats("teacher_sequence_length", teacher_sequence_length)
 
         # batch sequence generation is bounded by the slowest sample
-        slowest = np.argmax(t_generate_sequences + t_tool_calls + t_compute_score)
+        slowest = np.argmax(
+            t_generate_sequences + t_tool_calls + t_compute_score + t_compute_teacher_logprobs + t_teacher_output_pad
+        )
         prompt_length = output.batch["prompts"].shape[1]
+        timing["agent_loop/slowest/agent_run"] = t_agent_run[slowest]
+        timing["agent_loop/slowest/agent_postprocess"] = t_agent_postprocess[slowest]
         timing["agent_loop/slowest/generate_sequences"] = t_generate_sequences[slowest]
         timing["agent_loop/slowest/tool_calls"] = t_tool_calls[slowest]
         timing["agent_loop/slowest/compute_score"] = t_compute_score[slowest]
+        timing["agent_loop/slowest/compute_teacher_logprobs"] = t_compute_teacher_logprobs[slowest]
+        timing["agent_loop/slowest/teacher_output_pad"] = t_teacher_output_pad[slowest]
+        timing["agent_loop/slowest/teacher_topk_width"] = teacher_topk_width[slowest]
+        timing["agent_loop/slowest/teacher_sequence_length"] = teacher_sequence_length[slowest]
         timing["agent_loop/slowest/num_preempted"] = num_preempted[slowest]
 
         if "attention_mask" in output.batch:

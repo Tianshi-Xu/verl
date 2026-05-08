@@ -218,6 +218,115 @@ class _VocabParallelKLDivergence(torch.autograd.Function):
         return grad_input, None, None, None
 
 
+class _VocabParallelBackwardKLDivergence(torch.autograd.Function):
+    """Backward KL on normalized teacher top-k support for vocab-parallel logits."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        vp_logits: torch.Tensor,
+        target_topk_logps: torch.Tensor,
+        target_topk_indices: torch.Tensor,
+        log_prob_min_clamp: Optional[float],
+    ):
+        from megatron.core.parallel_state import (
+            get_tensor_model_parallel_group,
+            get_tensor_model_parallel_rank,
+            get_tensor_model_parallel_world_size,
+        )
+        from megatron.core.tensor_parallel.utils import VocabUtility
+
+        vp_source_logps = vocab_parallel_log_softmax(vp_logits).float()
+        vp_source_probs = torch.exp(vp_source_logps)
+
+        rank = get_tensor_model_parallel_rank()
+        world_size = get_tensor_model_parallel_world_size()
+        partition_vocab_size = vp_logits.size(-1)
+        vocab_start_index, vocab_end_index = VocabUtility.vocab_range_from_per_partition_vocab_size(
+            partition_vocab_size, rank, world_size
+        )
+
+        topk_indices_in_vocab_mask = (target_topk_indices >= vocab_start_index) & (
+            target_topk_indices < vocab_end_index
+        )
+
+        target_topk_indices = target_topk_indices.clone()
+        target_topk_logps = target_topk_logps.clone()
+        target_topk_indices = target_topk_indices - vocab_start_index
+        target_topk_indices[~topk_indices_in_vocab_mask] = 0
+
+        if log_prob_min_clamp is not None:
+            target_topk_logps = target_topk_logps.clamp_min(log_prob_min_clamp)
+        target_topk_logps = target_topk_logps.float()
+        target_topk_probs = torch.exp(target_topk_logps)
+        target_topk_mass = torch.sum(target_topk_probs, dim=-1)
+        target_topk_logps[~topk_indices_in_vocab_mask] = 0
+
+        topk = target_topk_indices.size(-1)
+        vp_source_logps_2d = vp_source_logps.view(-1, partition_vocab_size)
+        arange_1d = torch.arange(start=0, end=vp_source_logps_2d.size(0), device=vp_source_logps_2d.device)
+        vp_source_topk_logps_2d = vp_source_logps_2d[arange_1d.unsqueeze(-1), target_topk_indices.view(-1, topk)]
+        vp_source_topk_logps = vp_source_topk_logps_2d.view(target_topk_indices.shape)
+        vp_source_topk_probs = torch.exp(vp_source_topk_logps) * topk_indices_in_vocab_mask
+        per_token_topk_mass = torch.sum(vp_source_topk_probs, dim=-1)
+        torch.distributed.all_reduce(
+            per_token_topk_mass,
+            op=torch.distributed.ReduceOp.SUM,
+            group=get_tensor_model_parallel_group(),
+        )
+
+        normalized_source_topk_probs = vp_source_topk_probs / per_token_topk_mass.clamp_min(1e-12).unsqueeze(-1)
+        normalized_source_topk_logps = vp_source_topk_logps - per_token_topk_mass.clamp_min(1e-12).log().unsqueeze(-1)
+        normalized_target_topk_logps = target_topk_logps - target_topk_mass.clamp_min(1e-12).log().unsqueeze(-1)
+        normalized_source_topk_logps[~topk_indices_in_vocab_mask] = 0
+        normalized_target_topk_logps[~topk_indices_in_vocab_mask] = 0
+
+        per_token_kl_loss = torch.sum(
+            normalized_source_topk_probs * (normalized_source_topk_logps - normalized_target_topk_logps),
+            dim=-1,
+        )
+        torch.distributed.all_reduce(
+            per_token_kl_loss,
+            op=torch.distributed.ReduceOp.SUM,
+            group=get_tensor_model_parallel_group(),
+        )
+
+        per_topk_grad = normalized_source_topk_probs * (
+            normalized_source_topk_logps - normalized_target_topk_logps - per_token_kl_loss.unsqueeze(-1)
+        )
+        ctx.save_for_backward(
+            per_topk_grad,
+            target_topk_indices,
+            topk_indices_in_vocab_mask,
+        )
+        ctx.partition_vocab_size = partition_vocab_size
+        ctx.mark_non_differentiable(per_token_topk_mass, target_topk_mass)
+        return per_token_kl_loss, per_token_topk_mass.detach(), target_topk_mass.detach()
+
+    @staticmethod
+    def backward(
+        ctx,
+        grad_loss: torch.Tensor,
+        grad_source_mass: torch.Tensor,
+        grad_target_mass: torch.Tensor,
+    ):
+        per_topk_grad, target_topk_indices, active_mask = ctx.saved_tensors
+
+        topk = target_topk_indices.size(-1)
+        grad_input = torch.zeros(
+            (*target_topk_indices.shape[:2], ctx.partition_vocab_size),
+            device=per_topk_grad.device,
+            dtype=per_topk_grad.dtype,
+        )
+        grad_input_2d = grad_input.view(-1, grad_input.size(-1))
+        target_topk_indices_flat = target_topk_indices.view(-1, topk)
+        add = per_topk_grad.view(-1, topk) * active_mask.view(-1, topk).to(grad_input_2d.dtype)
+        grad_input_2d.scatter_add_(dim=1, index=target_topk_indices_flat, src=add)
+
+        grad_input.mul_(grad_loss.unsqueeze(dim=-1))
+        return grad_input, None, None, None
+
+
 def compute_forward_kl_topk(
     student_logits: torch.Tensor,
     teacher_topk_log_probs: torch.Tensor,
@@ -252,6 +361,39 @@ def compute_forward_kl_topk(
     # 2. compute token-wise KL divergence across tp groups
     distillation_loss_config: DistillationLossConfig = config.distillation_loss
     distillation_losses, student_mass, teacher_mass = _VocabParallelKLDivergence.apply(
+        student_logits,
+        teacher_topk_log_probs_cp_split,
+        teacher_topk_ids_cp_split,
+        distillation_loss_config.log_prob_min_clamp,
+    )
+
+    return {
+        "distillation_losses": distillation_losses,
+        "student_mass": student_mass,
+        "teacher_mass": teacher_mass,
+    }
+
+
+def compute_backward_kl_topk(
+    student_logits: torch.Tensor,
+    teacher_topk_log_probs: torch.Tensor,
+    teacher_topk_ids: torch.Tensor,
+    config: DistillationConfig,
+    data_format: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute backward KL distillation loss on normalized teacher top-k support."""
+    assert teacher_topk_log_probs.is_nested and teacher_topk_ids.is_nested
+
+    if data_format == "thd":
+        teacher_topk_log_probs_cp_split, *_ = preprocess_thd_engine(teacher_topk_log_probs, pre_process=True)
+        teacher_topk_ids_cp_split, *_ = preprocess_thd_engine(teacher_topk_ids, pre_process=True)
+    else:
+        teacher_topk_log_probs_cp_split, *_ = preprocess_bshd_engine(teacher_topk_log_probs, pre_process=True)
+        teacher_topk_ids_cp_split, *_ = preprocess_bshd_engine(teacher_topk_ids, pre_process=True)
+    assert teacher_topk_log_probs_cp_split.shape[:2] == teacher_topk_ids_cp_split.shape[:2] == student_logits.shape[:2]
+
+    distillation_loss_config: DistillationLossConfig = config.distillation_loss
+    distillation_losses, student_mass, teacher_mass = _VocabParallelBackwardKLDivergence.apply(
         student_logits,
         teacher_topk_log_probs_cp_split,
         teacher_topk_ids_cp_split,

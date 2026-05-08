@@ -1,0 +1,47 @@
+tools:
+  - class_name: recipe.skillrl_agent_loop.env_action_tool.TakeActionTool
+    config:
+      type: native
+    tool_schema:
+      type: function
+      function:
+        name: take_action
+        description: Take one action in the AlfWorld environment.
+        parameters:
+          type: object
+          properties:
+            action:
+              type: string
+              description: One action copied from the available actions list.
+          required: [action]
+  - class_name: recipe.skillrl_agent_loop.env_action_tool.SearchActionTool
+    config:
+      type: native
+    tool_schema:
+      type: function
+      function:
+        name: search_action
+        description: Search the WebShop site with keywords.
+        parameters:
+          type: object
+          properties:
+            keywords:
+              type: string
+              description: Search keywords.
+          required: [keywords]
+  - class_name: recipe.skillrl_agent_loop.env_action_tool.ClickActionTool
+    config:
+      type: native
+    tool_schema:
+      type: function
+      function:
+        name: click_action
+        description: Click one available WebShop action.
+        parameters:
+          type: object
+          properties:
+            value:
+              type: string
+              description: The clickable value to click.
+          required: [value]
+

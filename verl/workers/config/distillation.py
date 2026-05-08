@@ -22,7 +22,12 @@ from verl.utils.config import omega_conf_to_dataclass
 
 from .rollout import RolloutConfig
 
-__all__ = ["DistillationLossConfig", "DistillationTeacherModelConfig", "DistillationConfig"]
+__all__ = [
+    "DistillationLossConfig",
+    "DistillationTeacherPromptConfig",
+    "DistillationTeacherModelConfig",
+    "DistillationConfig",
+]
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -110,6 +115,25 @@ class DistillationLossConfig(BaseConfig):
                 "Directly backpropagating k1 loss is incorrect since gradient of k1 loss"
                 " wrt model weights does not depend on teacher log probabilities."
             )
+
+
+@dataclass
+class DistillationTeacherPromptConfig(BaseConfig):
+    """Configuration for constructing teacher-only prompts in OPD."""
+
+    mode: str = "same_as_student"
+    template_path: Optional[str] = None
+    skill_json_path: Optional[str] = None
+    skill_top_k: int = 1
+    task_specific_top_k: Optional[int] = 2
+    mistakes_top_k: Optional[int] = 2
+
+    def __post_init__(self):
+        valid_modes = {"same_as_student", "skill_injected", "custom_template"}
+        if self.mode not in valid_modes:
+            raise ValueError(f"Invalid distillation.teacher_prompt.mode={self.mode}; valid modes are {valid_modes}.")
+        if self.mode == "custom_template" and not self.template_path:
+            raise ValueError("distillation.teacher_prompt.template_path is required when mode=custom_template.")
 
 
 @dataclass
@@ -252,6 +276,7 @@ class DistillationConfig(BaseConfig):
     nnodes: int = 0
     teacher_models: dict[str, DistillationTeacherModelConfig] = field(default_factory=dict)
     teacher_key: str = "data_source"
+    teacher_prompt: DistillationTeacherPromptConfig = field(default_factory=DistillationTeacherPromptConfig)
     distillation_loss: DistillationLossConfig = field(default_factory=DistillationLossConfig)
 
     def __post_init__(self):

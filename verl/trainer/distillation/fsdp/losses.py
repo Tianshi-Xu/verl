@@ -74,3 +74,38 @@ def compute_forward_kl_topk(
     distillation_losses = kl_divergence(log_q=student_topk_log_probs, log_p=teacher_topk_log_probs)
 
     return {"distillation_losses": distillation_losses, "student_mass": student_mass, "teacher_mass": teacher_mass}
+
+
+def compute_backward_kl_topk(
+    student_logits: torch.Tensor,
+    teacher_topk_log_probs: torch.Tensor,
+    teacher_topk_ids: torch.Tensor,
+    config: DistillationConfig,
+    data_format: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute backward KL distillation loss on normalized teacher top-k support.
+
+    This computes KL(student_topk_norm || teacher_topk_norm), where both distributions
+    are renormalized over the teacher top-k tokens available from the teacher server.
+    """
+    assert teacher_topk_log_probs.is_nested and teacher_topk_ids.is_nested
+    teacher_topk_log_probs = teacher_topk_log_probs.values().unsqueeze(0)  # (1, total_nnz, topk)
+    teacher_topk_ids = teacher_topk_ids.values().unsqueeze(0)  # (1, total_nnz, topk)
+
+    if get_ulysses_sequence_parallel_world_size() > 1:
+        teacher_topk_log_probs = slice_input_tensor(teacher_topk_log_probs, dim=1)
+        teacher_topk_ids = slice_input_tensor(teacher_topk_ids, dim=1)
+    assert teacher_topk_log_probs.shape[:2] == teacher_topk_ids.shape[:2] == student_logits.shape[:2]
+
+    student_log_probs = F.log_softmax(student_logits, dim=-1)
+    student_topk_log_probs = torch.gather(student_log_probs, dim=-1, index=teacher_topk_ids)
+    student_mass = student_topk_log_probs.exp().sum(dim=-1)
+    teacher_mass = teacher_topk_log_probs.exp().sum(dim=-1)
+    loss_config: DistillationLossConfig = config.distillation_loss
+    if loss_config.log_prob_min_clamp is not None:
+        teacher_topk_log_probs = teacher_topk_log_probs.clamp_min(loss_config.log_prob_min_clamp)
+    student_topk_log_probs = student_topk_log_probs - torch.logsumexp(student_topk_log_probs, dim=-1, keepdim=True)
+    teacher_topk_log_probs = teacher_topk_log_probs - torch.logsumexp(teacher_topk_log_probs, dim=-1, keepdim=True)
+    distillation_losses = kl_divergence(log_q=teacher_topk_log_probs, log_p=student_topk_log_probs)
+
+    return {"distillation_losses": distillation_losses, "student_mass": student_mass, "teacher_mass": teacher_mass}

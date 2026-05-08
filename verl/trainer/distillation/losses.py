@@ -139,11 +139,25 @@ def compute_topk_loss(
         case "fsdp" | "veomni":
             import verl.trainer.distillation.fsdp.losses as fsdp_losses
 
-            distillation_loss_fn = fsdp_losses.compute_forward_kl_topk
+            if distillation_config.distillation_loss.loss_mode == "forward_kl_topk":
+                distillation_loss_fn = fsdp_losses.compute_forward_kl_topk
+            elif distillation_config.distillation_loss.loss_mode == "backward_kl_topk":
+                distillation_loss_fn = fsdp_losses.compute_backward_kl_topk
+            else:
+                raise NotImplementedError(
+                    f"Unsupported top-k distillation loss mode: {distillation_config.distillation_loss.loss_mode}"
+                )
         case "megatron":
             import verl.trainer.distillation.megatron.losses as megatron_losses
 
-            distillation_loss_fn = megatron_losses.compute_forward_kl_topk
+            if distillation_config.distillation_loss.loss_mode == "forward_kl_topk":
+                distillation_loss_fn = megatron_losses.compute_forward_kl_topk
+            elif distillation_config.distillation_loss.loss_mode == "backward_kl_topk":
+                distillation_loss_fn = megatron_losses.compute_backward_kl_topk
+            else:
+                raise NotImplementedError(
+                    f"Unsupported top-k distillation loss mode: {distillation_config.distillation_loss.loss_mode}"
+                )
         case _:
             raise NotImplementedError(f"Unsupported strategy: {config.strategy=}")
 
@@ -291,14 +305,16 @@ def distillation_loss(
     return distillation_loss, distillation_metrics
 
 
-@register_distillation_loss(DistillationLossSettings(names=["forward_kl_topk"], use_topk=True))  # type: ignore[arg-type]
-def compute_forward_kl_topk(
+@register_distillation_loss(
+    DistillationLossSettings(names=["forward_kl_topk", "backward_kl_topk"], use_topk=True)
+)  # type: ignore[arg-type]
+def compute_topk_kl(
     config: ActorConfig,
     distillation_config: DistillationConfig,
     model_output: dict,
     data: TensorDict,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
-    """Compute forward KL distillation loss and related metrics using top-k log probabilities.
+    """Compute top-k KL distillation loss and related metrics.
 
     Returns:
     - distillation_losses: (bsz, resp_len)

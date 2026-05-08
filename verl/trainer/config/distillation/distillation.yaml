@@ -109,5 +109,18 @@ teacher_models:
       response_length: ${oc.select:actor_rollout_ref.rollout.response_length}
       temperature: ${oc.select:actor_rollout_ref.rollout.temperature}
 
+# Teacher-only prompt construction for OPD.
+# same_as_student: teacher scores the exact student prompt + trajectory.
+# skill_injected: teacher sees the initial student messages with retrieved skills appended, then scores the student trajectory.
+# custom_template: render template_path with {system_prompt}, {task}, and {skills}.
+teacher_prompt:
+  _target_: verl.workers.config.DistillationTeacherPromptConfig
+  mode: same_as_student
+  template_path: null
+  skill_json_path: null
+  skill_top_k: 1
+  task_specific_top_k: 2
+  mistakes_top_k: 2
+
 # Key to route examples to the appropriate teacher model in multi-teacher setups. Should correspond to a field in the data proto, e.g., task.
 teacher_key: data_source

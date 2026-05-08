@@ -1,0 +1,17 @@
+tools:
+  - class_name: recipe.skillrl_agent_loop.env_action_tool.TakeActionTool
+    config:
+      type: native
+    tool_schema:
+      type: function
+      function:
+        name: take_action
+        description: Take an action.
+        parameters:
+          type: object
+          properties:
+            action:
+              type: string
+              description: The action you would like to take
+          required: [action]
+          additionalProperties: false

@@ -1,0 +1,4 @@
+- name: skillrl_env_agent
+  _target_: recipe.skillrl_agent_loop.env_agent_loop.SkillRLEnvAgentLoop
+  env_config_path: ${oc.env:VERL_ROOT}/examples/skillrl_agent_loop/config/envs.yaml
+  max_tokens_per_step: 512

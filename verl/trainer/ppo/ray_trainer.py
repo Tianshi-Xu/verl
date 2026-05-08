@@ -1371,6 +1371,18 @@ class RayPPOTrainer:
 
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
+                        if "agent_loop/compute_teacher_logprobs/mean" in timing_raw:
+                            print(
+                                "[OPD trainer timing] "
+                                f"step={self.global_steps} after_gen "
+                                f"gen={timing_raw.get('gen', 0.0):.2f}s "
+                                f"worker_rpc={timing_raw.get('agent_loop/manager_worker_rpc', 0.0):.2f}s "
+                                f"manager_concat={timing_raw.get('agent_loop/manager_concat', 0.0):.2f}s "
+                                f"teacher_compute_mean={timing_raw.get('agent_loop/compute_teacher_logprobs/mean', 0.0):.2f}s "
+                                f"teacher_compute_max={timing_raw.get('agent_loop/compute_teacher_logprobs/max', 0.0):.2f}s "
+                                f"worker_postprocess_max={timing_raw.get('agent_loop/worker_postprocess/max', 0.0):.2f}s",
+                                flush=True,
+                            )
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         with marked_timer("gen_max", timing_raw, color="purple"):
@@ -1537,6 +1549,15 @@ class RayPPOTrainer:
                             num_repeat=self.config.actor_rollout_ref.rollout.n,
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
+                        )
+                    if "agent_loop/compute_teacher_logprobs/mean" in timing_raw:
+                        print(
+                            "[OPD trainer timing] "
+                            f"step={self.global_steps} before_update "
+                            f"reward={timing_raw.get('reward', 0.0):.2f}s "
+                            f"old_log_prob={timing_raw.get('old_log_prob', 0.0):.2f}s "
+                            f"adv={timing_raw.get('adv', 0.0):.2f}s",
+                            flush=True,
                         )
 
                     # update critic
