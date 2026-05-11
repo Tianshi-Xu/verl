@@ -1,0 +1,185 @@
+{
+  "general_skills": [
+    {
+      "skill_id": "gen_v2_001",
+      "title": "Always End With One Valid Tool Call",
+      "principle": "Every assistant turn must end with exactly one search_action or click_action tool call. Do not answer in text, do not summarize the product, and do not say the task is complete unless the environment has already ended.",
+      "when_to_apply": "Every turn, especially after deciding that a product is good enough or after reading Description or Features."
+    },
+    {
+      "skill_id": "gen_v2_002",
+      "title": "Select Required Options Before Buy Now",
+      "principle": "Before clicking buy now, identify every explicit option in the instruction, such as color, size, style, shape, pack, capacity, count, width, or dimensions. If that value appears in clickables on the product page, click each required option first, then click buy now.",
+      "when_to_apply": "On a product page that contains option clickables and a buy now button."
+    },
+    {
+      "skill_id": "gen_v2_003",
+      "title": "Buy Only From The Main Product Page",
+      "principle": "The buy now action is valid on the main product page, not inside Description, Features, or Reviews. If you are on a detail page where only back to search or < prev is available, click < prev to return to the product page before buying.",
+      "when_to_apply": "After clicking description, features, or reviews, or when buy now is not listed in clickables."
+    },
+    {
+      "skill_id": "gen_v2_004",
+      "title": "Do Not Loop Search And Back",
+      "principle": "Do not repeat the same search and back to search cycle. If a search result page has plausible products, click a product, inspect or select options, and either buy it or move to a different product or next page.",
+      "when_to_apply": "After one repeated search query or after returning to search results with the same candidates."
+    },
+    {
+      "skill_id": "gen_v2_005",
+      "title": "Use Search Results As Candidate Evidence",
+      "principle": "Search result titles and prices are enough to choose a plausible candidate. Do not require every attribute to appear in the result snippet. Open promising candidates and use the product page options, title, price, Description, and Features to decide.",
+      "when_to_apply": "On search result pages where titles are partially matching but not all constraints are visible."
+    },
+    {
+      "skill_id": "gen_v2_006",
+      "title": "Commit After Product Type Price And Options Match",
+      "principle": "If the product type is plausible, the displayed price is below the limit, and all requested visible options have been selected, click buy now. Avoid extra verification that risks losing the product page or exhausting steps.",
+      "when_to_apply": "Right before purchasing a configured product."
+    }
+  ],
+  "task_specific_skills": {
+    "apparel": [
+      {
+        "skill_id": "app_v2_001",
+        "title": "Choose Size And Color Before Buying Apparel",
+        "principle": "For shirts, pants, jackets, sleepwear, blazers, sweaters, dresses, tops, shorts, and similar apparel, always click the requested size and color if they appear in clickables. Buying before selecting them usually fails even when the product title is correct.",
+        "when_to_apply": "On any apparel product page with size or color options."
+      },
+      {
+        "skill_id": "app_v2_002",
+        "title": "Do Not Over Reject Apparel Titles",
+        "principle": "Apparel titles often omit details like wash cold, machine wash, elastic waistband, button closure, material, or fit. If the category and price are plausible, open the product and use options or Features to verify. If options match, prefer buying over endless searching.",
+        "when_to_apply": "When search results partly match an apparel request but omit some attributes."
+      }
+    ],
+    "footwear": [
+      {
+        "skill_id": "foo_v2_001",
+        "title": "Select Footwear Size And Color",
+        "principle": "For shoes, sneakers, boots, sandals, slippers, and loafers, click the exact requested size and color before buy now. Shoe reward depends on the selected variant, not only the product page.",
+        "when_to_apply": "On footwear product pages with size or color options."
+      },
+      {
+        "skill_id": "foo_v2_002",
+        "title": "Check Sole And Function In Features Once",
+        "principle": "For constraints like non slip, rubber sole, waterproof, memory foam, or walking/running use, click Features or Description once if the main page is unclear, then return with < prev and continue selecting options or buying.",
+        "when_to_apply": "When a footwear functional attribute is not visible on the main product page."
+      }
+    ],
+    "home_decor": [
+      {
+        "skill_id": "hom_v2_001",
+        "title": "Treat Dimensions And Shape As Options",
+        "principle": "For rugs, curtains, blankets, furniture, pillows, covers, and decor, requested dimensions, shape, set count, or color are often clickable variants. Select each matching option before buy now.",
+        "when_to_apply": "On home decor pages listing sizes, shapes, colors, counts, or room variants."
+      },
+      {
+        "skill_id": "hom_v2_002",
+        "title": "Use Next Page Instead Of Search Loops",
+        "principle": "If the first home decor result page does not contain a plausible item, click next > when available before repeating or over-refining the same search query.",
+        "when_to_apply": "On home decor search results with next > and no strong candidate on page 1."
+      }
+    ],
+    "electronics": [
+      {
+        "skill_id": "ele_v2_001",
+        "title": "Select Pack Size Color And Style",
+        "principle": "For electronics and accessories such as cables, chargers, phone holders, cases, headphones, and adapters, required pack count, color, length, style, or kit type may be clickable options. Select them before buy now.",
+        "when_to_apply": "On electronics pages with variant options like color, size, pack, length, or style."
+      },
+      {
+        "skill_id": "ele_v2_002",
+        "title": "Do Not Confuse Feature Pages With Checkout",
+        "principle": "Features and Description can confirm specs such as wireless charging, HDMI speed, Bluetooth, or heavy duty build, but buying must happen after returning to the main product page where buy now is listed.",
+        "when_to_apply": "After inspecting electronics features or description."
+      }
+    ],
+    "accessories": [
+      {
+        "skill_id": "acc_v2_001",
+        "title": "Variant Names May Be Exact Targets",
+        "principle": "For bags, wallets, jewelry, watches, phone mounts, and small accessories, values like vent kit, green braided, 3-pack, gold, or specific style names are often exact clickable options. Copy the option text exactly from clickables.",
+        "when_to_apply": "When the instruction names a color, style, pack, or material and that text appears in clickables."
+      },
+      {
+        "skill_id": "acc_v2_002",
+        "title": "Buy After Exact Option Match",
+        "principle": "If an accessory product page offers the exact requested option values and price is under the limit, select those options and buy. Avoid checking unrelated reviews or repeatedly returning to search.",
+        "when_to_apply": "On an accessory product page with matching options."
+      }
+    ],
+    "beauty_health": [
+      {
+        "skill_id": "bea_v2_001",
+        "title": "Search Core Ingredient And Product Type",
+        "principle": "For beauty, health, food, supplement, shampoo, cream, lotion, deodorant, and cleanser tasks, search with the product type plus the rarest ingredient, scent, flavor, or dietary constraint. Do not include too many secondary adjectives if results are poor.",
+        "when_to_apply": "Before searching or refining beauty and health queries."
+      },
+      {
+        "skill_id": "bea_v2_002",
+        "title": "Flavor Scent Size And Count Are Options",
+        "principle": "If flavor, scent, size, ounce count, pack count, or color appears as a clickable option, select it before buy now. If it is only visible in the title and no option is available, buy from the main product page if the price fits.",
+        "when_to_apply": "On beauty, health, food, or supplement product pages."
+      }
+    ],
+    "other": [
+      {
+        "skill_id": "oth_v2_001",
+        "title": "Extract Option Values From The Instruction",
+        "principle": "When the category is unclear, first extract explicit key-value constraints from the instruction. Values after color:, size:, style:, shape:, count:, pack:, or dimensions should be clicked if they appear as options.",
+        "when_to_apply": "For any WebShop task outside the common categories."
+      },
+      {
+        "skill_id": "oth_v2_002",
+        "title": "Prefer Progress Over Explanation",
+        "principle": "If no exact match is obvious, take a concrete next action: click a plausible product, click next >, select an option, or return with < prev. Do not provide a written conclusion because the environment requires tool actions.",
+        "when_to_apply": "When uncertain or near the step limit."
+      }
+    ]
+  },
+  "common_mistakes": [
+    {
+      "mistake_id": "err_v2_001",
+      "description": "Clicking buy now before selecting required options.",
+      "why_it_happens": "The model sees a matching title and price, then assumes color, size, style, or count are already satisfied.",
+      "how_to_avoid": "Before buy now, click every requested option value that appears in clickables, especially color and size."
+    },
+    {
+      "mistake_id": "err_v2_002",
+      "description": "Trying to buy from Description, Features, or Reviews pages.",
+      "why_it_happens": "The model verifies hidden specs but forgets that buy now is only available on the main product page.",
+      "how_to_avoid": "After reading details, click < prev to return to the product page, then select options and buy."
+    },
+    {
+      "mistake_id": "err_v2_003",
+      "description": "Repeating the same search and back to search loop until max steps.",
+      "why_it_happens": "The model waits for a perfect snippet match instead of opening and configuring plausible candidates.",
+      "how_to_avoid": "After one repeated query, click a plausible product, use next >, or change the query meaningfully."
+    },
+    {
+      "mistake_id": "err_v2_004",
+      "description": "Writing a final answer without a tool call.",
+      "why_it_happens": "The model believes the product has been found, but the WebShop environment only advances through tool calls.",
+      "how_to_avoid": "Always end with search_action or click_action. If the product is ready, click buy now; if not on the product page, navigate with < prev or back to search."
+    },
+    {
+      "mistake_id": "err_v2_005",
+      "description": "Over-rejecting plausible products because not every attribute is visible in search results.",
+      "why_it_happens": "Search snippets omit many attributes that are only shown after opening the product or selecting variants.",
+      "how_to_avoid": "Open plausible products and inspect options or Features before rejecting them."
+    },
+    {
+      "mistake_id": "err_v2_006",
+      "description": "Using invented or differently cased clickable values.",
+      "why_it_happens": "The model paraphrases Buy Now, Confirm, Add to Cart, or option names instead of copying available clickables.",
+      "how_to_avoid": "Copy the clickable value exactly as shown, such as buy now, < prev, next >, medium, or z-dark green."
+    }
+  ],
+  "metadata": {
+    "source": "optimized from Qwen3-4B WebShop synthetic valid dump",
+    "base_file": "claude_style_skills.json",
+    "validation_dump": "verl/examples/skillrl_agent_loop/4b-valid/validation/0.jsonl",
+    "observed_accuracy": "53/1000 = 5.3%",
+    "notes": "Designed for template retrieval with skill_top_k=6, task_specific_top_k=2, mistakes_top_k=2. Focuses on selecting required options before buy now, returning from detail pages before purchase, and avoiding repeated search/back loops."
+  }
+}

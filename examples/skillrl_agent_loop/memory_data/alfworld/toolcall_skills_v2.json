@@ -1,0 +1,141 @@
+{
+  "general_skills": [
+    {
+      "skill_id": "gen_v2_001",
+      "title": "Always Emit One Valid Tool Action",
+      "principle": "Every assistant turn must end with exactly one take_action tool call. Copy one complete action string from AVAILABLE ACTIONS into the action argument. Do not answer in text, do not say the task is complete, and do not invent an action that is not listed.",
+      "when_to_apply": "Every turn, especially after a placement, a lamp use, or when you believe the goal is already satisfied."
+    },
+    {
+      "skill_id": "gen_v2_002",
+      "title": "Use Final Goal Actions Directly",
+      "principle": "When the required object is in hand and the destination or reference object is reachable, take the listed final action immediately: move/put the object to the destination, use the appliance, or use the desklamp. Avoid confirmation actions such as look, inventory, examine, open, or close unless they are required to make the final action available.",
+      "when_to_apply": "After acquiring or transforming the goal object."
+    },
+    {
+      "skill_id": "gen_v2_003",
+      "title": "Avoid Repeating No-Progress Actions",
+      "principle": "If an action returns the same observation, Nothing happened, or only repeats a known view, do not choose that same action again. Switch to an unvisited location, open a new container, take a visible target, or perform the required state-change/final placement action.",
+      "when_to_apply": "After any repeated look, examine, open, close, inventory, use, put, or move action."
+    },
+    {
+      "skill_id": "gen_v2_004",
+      "title": "Match The Exact Object Type",
+      "principle": "Use the exact object noun in the task. A mug is not a cup, a cup is not a mug, a soapbottle is not a soapbar, and a remotecontrol is not a creditcard. If you picked the wrong type, stop using it for the goal and search for the exact type.",
+      "when_to_apply": "Before taking an object, transforming it, or placing it."
+    }
+  ],
+  "task_specific_skills": {
+    "pick_and_place": [
+      {
+        "skill_id": "pic_v2_001",
+        "title": "Handle Single And Two Object Placement",
+        "principle": "For one object, take the exact target and place it at the destination once. For goals saying two objects, keep a count: take one target, place it at the destination, then return for a different remaining target and place it too. Do not remove an already placed target or repeat the same placement loop.",
+        "when_to_apply": "For normal put tasks and for any task asking for two target objects."
+      },
+      {
+        "skill_id": "pic_v2_002",
+        "title": "Take Visible Target Before Searching More",
+        "principle": "If a listed take action contains the exact target object, use it immediately. If the target is held and a listed move or put action to the requested destination is available, use that final action immediately.",
+        "when_to_apply": "When the target object is visible or already held."
+      }
+    ],
+    "look_at_obj_in_light": [
+      {
+        "skill_id": "loo_v2_001",
+        "title": "Lamp Tasks Finish By Taking Or Using Target",
+        "principle": "For 'look at X under the desklamp', find a desklamp, use desklamp once, then take the exact target X if it is visible or carry X to the lit lamp area. Do not loop on look or examine after the lamp is on.",
+        "when_to_apply": "When the task mentions looking at an object under a desklamp."
+      },
+      {
+        "skill_id": "loo_v2_002",
+        "title": "Same Surface Shortcut",
+        "principle": "If the desklamp and target are seen on the same desk, shelf, sidetable, or dresser, use the desklamp and then take the target object. This is usually enough; do not repeatedly look at the same surface.",
+        "when_to_apply": "When the target and desklamp are co-located."
+      }
+    ],
+    "clean": [
+      {
+        "skill_id": "cle_v2_001",
+        "title": "Clean Then Place Without Rechecking",
+        "principle": "The correct order is: take the exact target, go to sinkbasin or another cleaning source, choose the listed clean action, go to the destination, then choose the listed move or put action once. After cleaning, do not loop on examine/look/inventory unless the final placement action is unavailable.",
+        "when_to_apply": "For any task requiring a clean object."
+      },
+      {
+        "skill_id": "cle_v2_002",
+        "title": "Use The Listed Clean Action",
+        "principle": "When holding the target near a sinkbasin, prefer an explicit action like clean target with sinkbasin. If only clean target is listed, use that. Do not merely go to the sink or examine the sink and assume the object is clean.",
+        "when_to_apply": "When the target object is held and a cleaning source is reachable."
+      }
+    ],
+    "heat": [
+      {
+        "skill_id": "hea_v2_001",
+        "title": "Heat With Microwave Then Place Once",
+        "principle": "For hot or heat tasks, take the exact target, go to the microwave, open it only if needed, and choose the listed heat target with microwave action. After heating, go directly to the requested destination and choose the listed move or put action once. Do not close the microwave/fridge or examine the destination after the final placement.",
+        "when_to_apply": "For tasks requiring a hot object."
+      },
+      {
+        "skill_id": "hea_v2_002",
+        "title": "Do Not Substitute Or Over-Confirm",
+        "principle": "Do not heat or place similar objects. If the task says mug, use mug; if it says tomato, use tomato. Once the heated target has been placed at the requested destination, avoid look, inventory, examine, open, or close actions.",
+        "when_to_apply": "After finding the target or after heating it."
+      }
+    ],
+    "cool": [
+      {
+        "skill_id": "coo_v2_001",
+        "title": "Cool Uses Fridge Action Not Storage",
+        "principle": "For cool or cold tasks, take the exact target, go to the fridge, open it if needed, and choose the listed cool target with fridge action. Do not satisfy cooling by only moving the object into the fridge, closing it, reopening it, or taking it back.",
+        "when_to_apply": "For tasks requiring a cool object."
+      },
+      {
+        "skill_id": "coo_v2_002",
+        "title": "Deliver Cooled Object Immediately",
+        "principle": "After the cool action succeeds, go directly to the requested destination, open the destination only if needed, and choose the listed move or put action once. Do not loop on open/close/examine/look at the destination.",
+        "when_to_apply": "After cooling the target object."
+      }
+    ],
+    "examine": [
+      {
+        "skill_id": "exa_v2_001",
+        "title": "Desklamp Examine Requires One Lamp Use",
+        "principle": "For 'examine X with the desklamp', locate the exact target and a desklamp, take the target if it is not already at the lamp, then use desklamp once. If an action like use desklamp on X is listed, use it once only. Do not repeat use desklamp on X after the observation says the lamp was turned on.",
+        "when_to_apply": "For examine tasks involving a desklamp."
+      },
+      {
+        "skill_id": "exa_v2_002",
+        "title": "Find Two Means Placement Not Examination",
+        "principle": "If the goal starts with find two X and put them in/on Y, ignore the word find as an examine instruction. Treat it as a two-object placement task: place two distinct X objects at Y, one after the other.",
+        "when_to_apply": "For goals containing 'find two' and a destination."
+      }
+    ]
+  },
+  "common_mistakes": [
+    {
+      "mistake_id": "err_v2_001",
+      "description": "Writing reasoning or a final answer without a tool call.",
+      "why_it_happens": "The model believes the task is complete or waits for confirmation, but the agent loop still requires one valid take_action call.",
+      "how_to_avoid": "Always end the assistant message with a take_action call using one exact AVAILABLE ACTIONS string."
+    },
+    {
+      "mistake_id": "err_v2_002",
+      "description": "Repeating look, examine, open, close, inventory, use, put, or move after it gives no progress.",
+      "why_it_happens": "The model tries to verify success or recover from uncertainty by rechecking the same location.",
+      "how_to_avoid": "After one no-progress repetition, switch to the next required subgoal: take target, transform target, place target, or search a new location."
+    },
+    {
+      "mistake_id": "err_v2_003",
+      "description": "Using a similar object instead of the exact requested object.",
+      "why_it_happens": "ALFWorld object categories are strict and visually similar household items appear together.",
+      "how_to_avoid": "Match the task noun exactly before taking, cooling, heating, cleaning, or placing an object."
+    }
+  ],
+  "metadata": {
+    "source": "optimized from Qwen3-4B ALFWorld skill-enabled validation dump",
+    "base_file": "toolcall_skills.json",
+    "validation_dump": "verl/recipe/skillrl_agent_loop/alfworld_full_validation_qwen3_4b_skills/0.jsonl",
+    "observed_accuracy": "49/140 = 35.0%",
+    "notes": "Designed for template retrieval with skill_top_k=1, task_specific_top_k=2, mistakes_top_k=2."
+  }
+}

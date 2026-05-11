@@ -3,12 +3,16 @@
 
 set -euo pipefail
 
-# source /mnt/workspace/xts/setup_env.sh
-# activate_torch290
+source /mnt/data/xts/setup_env.sh
+activate_torch290
+
+export TMPDIR="${RUNTIME_TMPDIR:-/tmp/xts-runtime-tmp}"
+mkdir -p "$TMPDIR"
 
 verl_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-skillrl_root="$(cd "$verl_root/.." && pwd)/SkillRL"
-
+skillrl_root="$verl_root/examples/skillrl_agent_loop"
+skill_data_root="$skillrl_root/memory_data"
+export ALFWORLD_DATA=/mnt/data/xts/data/alfworld
 export VERL_ROOT="$verl_root"
 export SKILLRL_ROOT="$skillrl_root"
 export PYTHONPATH="$verl_root:$skillrl_root"
@@ -21,34 +25,43 @@ export RAY_DEDUP_LOGS=1
 cd "$verl_root"
 
 ########################### user settings ###########################
+project_name=skill-v1
+experiment_name=4b_opd
 
-student_model=/mnt/workspace/xts/models/Qwen3-4B
-teacher_model=/mnt/workspace/xts/models/Qwen3-4B
-data_root=/mnt/workspace/xts/data/skillrl-agent-loop
+student_model=/mnt/data/xts/models/Qwen3-4B
+teacher_model=/mnt/data/xts/models/Qwen3-4B
+data_root=/mnt/data/xts/data/skillrl-agent-loop
+alfworld_data=/mnt/data/xts/data/alfworld
 
-student_world_size=7
-teacher_world_size=1
+resume_mode=disable
+resume_dir=/mnt/data/xts/skill/verl/checkpoints/skillrl_agent_loop/alfworld_env_agent_opd_backward_kl/global_step_60
+
+student_world_size=6
+teacher_world_size=2
 nnodes=1
 
 train_data_size=-1
 val_data_size=-1
-train_batch_size=28
+train_batch_size=30
 
 max_steps=50
 max_prompt_length=4096
 max_response_length=27000
 max_model_len=$((max_prompt_length + max_response_length + 1))
 max_token_len_per_gpu=32768
+# Use null to disable tool-response character truncation.
+max_tool_response_length=null
+alfworld_eval_dataset=eval_in_distribution
 
 student_inject_skills=false
 student_skill_json_path=
 
 teacher_prompt_mode=skill_injected
 teacher_prompt_template_path=
-teacher_skill_json_path=/mnt/workspace/xts/skill/SkillRL/memory_data/alfworld/toolcall_skills_v2.json
-teacher_skill_top_k=1
-teacher_task_specific_top_k=2
-teacher_mistakes_top_k=2
+teacher_skill_json_path="$skill_data_root/alfworld/toolcall_skills_v2.json"
+teacher_skill_top_k=6
+teacher_task_specific_top_k=null
+teacher_mistakes_top_k=5
 
 distillation_loss_mode=backward_kl_topk
 distillation_topk=128
@@ -58,18 +71,22 @@ distillation_log_prob_min_clamp=-10.0
 distillation_use_response_mask_for_topk_kl=true
 
 actor_lr=1e-6
-rollout_gpu_memory_utilization=0.80
-teacher_gpu_memory_utilization=0.3
+actor_calculate_entropy=true
+rollout_gpu_memory_utilization=0.85
+teacher_gpu_memory_utilization=0.5
 rollout_tensor_parallel_size=1
 teacher_tensor_parallel_size=1
 
+val_temperature=0.4
+val_do_sample=true
+val_n=4
+val_over_sample_rate=0.0
+val_shuffle=true
+
 total_epochs=2
 save_freq=20
-test_freq=10
+test_freq=20
 log_val_generations=10
-
-project_name=skillrl_agent_loop
-experiment_name=alfworld_env_agent_opd_backward_kl
 
 ########################### derived paths ###########################
 
@@ -80,8 +97,10 @@ tool_config_path="$verl_root/examples/skillrl_agent_loop/config/alfworld_tool.ya
 agent_loop_config_path="$verl_root/examples/skillrl_agent_loop/config/agent_loop.yaml"
 
 export SKILLRL_ALFWORLD_MAX_STEPS="$max_steps"
+export SKILLRL_ALFWORLD_EVAL_DATASET="$alfworld_eval_dataset"
 export SKILLRL_ALFWORLD_INJECT_SKILLS="$student_inject_skills"
 export SKILLRL_ALFWORLD_SKILL_JSON_PATH="$student_skill_json_path"
+export ALFWORLD_DATA="$alfworld_data"
 
 ########################### prepare data ###########################
 
@@ -90,7 +109,8 @@ python examples/skillrl_agent_loop/prepare_agent_data.py \
     --local_dir "$data_root" \
     --train_data_size "$train_data_size" \
     --val_data_size "$val_data_size" \
-    --alfworld_config_path "$alfworld_config_path"
+    --alfworld_config_path "$alfworld_config_path" \
+    --alfworld_eval_dataset "$alfworld_eval_dataset"
 
 ########################### parameter arrays ###########################
 
@@ -116,10 +136,11 @@ model=(
 
 actor=(
     actor_rollout_ref.actor.optim.lr="$actor_lr"
-    actor_rollout_ref.actor.ppo_mini_batch_size=28
+    actor_rollout_ref.actor.ppo_mini_batch_size="$train_batch_size"
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu="$max_token_len_per_gpu"
     actor_rollout_ref.actor.use_dynamic_bsz=True
     actor_rollout_ref.actor.use_kl_loss=False
+    actor_rollout_ref.actor.calculate_entropy="$actor_calculate_entropy"
     actor_rollout_ref.actor.fsdp_config.dtype=float16
     actor_rollout_ref.actor.fsdp_config.param_offload=True
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
@@ -130,7 +151,11 @@ rollout=(
     actor_rollout_ref.rollout.mode=async
     actor_rollout_ref.rollout.dtype=float16
     actor_rollout_ref.rollout.n=1
-    actor_rollout_ref.rollout.val_kwargs.n=1
+    actor_rollout_ref.rollout.val_kwargs.n="$val_n"
+    actor_rollout_ref.rollout.val_kwargs.temperature="$val_temperature"
+    actor_rollout_ref.rollout.val_kwargs.do_sample="$val_do_sample"
+    actor_rollout_ref.rollout.val_over_sample_rate="$val_over_sample_rate"
+    actor_rollout_ref.rollout.val_shuffle="$val_shuffle"
     actor_rollout_ref.rollout.gpu_memory_utilization="$rollout_gpu_memory_utilization"
     actor_rollout_ref.rollout.calculate_log_probs=True
     actor_rollout_ref.rollout.tensor_model_parallel_size="$rollout_tensor_parallel_size"
@@ -144,6 +169,7 @@ agent_loop=(
     actor_rollout_ref.rollout.multi_turn.enable=True
     actor_rollout_ref.rollout.multi_turn.tool_config_path="$tool_config_path"
     actor_rollout_ref.rollout.multi_turn.max_assistant_turns=$((max_steps + 1))
+    actor_rollout_ref.rollout.multi_turn.max_tool_response_length="$max_tool_response_length"
     actor_rollout_ref.rollout.agent.default_agent_loop=skillrl_env_agent
     actor_rollout_ref.rollout.agent.num_workers="$student_world_size"
     actor_rollout_ref.rollout.agent.agent_loop_config_path="$agent_loop_config_path"
@@ -185,6 +211,8 @@ trainer=(
     trainer.save_freq="$save_freq"
     trainer.test_freq="$test_freq"
     trainer.total_epochs="$total_epochs"
+    trainer.resume_mode="$resume_mode"
+    # trainer.resume_from_path=$resume_dir
 )
 
 ray=(

@@ -531,17 +531,26 @@ class RayPPOTrainer:
                     [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
                 )
 
+            if self.config.actor_rollout_ref.rollout.get("val_shuffle", False):
+                seed = self.config.data.get("seed", None)
+                seed = 42 if seed is None else int(seed)
+                rng = np.random.default_rng(seed)
+                shuffle_indices = rng.permutation(len(test_batch))
+                test_batch = test_batch[shuffle_indices]
+
             # repeat test batch
             test_batch = test_batch.repeat(
                 repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
             )
 
-            ground_truths = [
+            all_ground_truths = [
                 item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in test_batch
             ]
-            sample_gts.extend(ground_truths)
 
             test_gen_batch = self._get_gen_batch(test_batch)
+            test_gen_batch.non_tensor_batch["__validation_row_id__"] = np.arange(
+                len(test_gen_batch), dtype=np.int64
+            )
             test_gen_batch.meta_info = {
                 "eos_token_id": self.tokenizer.eos_token_id,
                 "pad_token_id": self.tokenizer.pad_token_id,
@@ -567,8 +576,27 @@ class RayPPOTrainer:
                 # replace with wake_up method once supported
                 self.checkpoint_manager.update_weights(self.global_steps)
 
-            # unpad
-            test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+            # unpad or select completed rows for validation oversampling
+            if "__validation_row_id__" in test_output_gen_batch_padded.non_tensor_batch:
+                validation_row_ids = test_output_gen_batch_padded.non_tensor_batch["__validation_row_id__"].astype(
+                    np.int64
+                )
+                selected_output_rows = []
+                selected_test_rows = []
+                seen_row_ids = set()
+                for output_row, row_id in enumerate(validation_row_ids.tolist()):
+                    if row_id >= len(test_batch) or row_id in seen_row_ids:
+                        continue
+                    seen_row_ids.add(row_id)
+                    selected_output_rows.append(output_row)
+                    selected_test_rows.append(row_id)
+                test_output_gen_batch = test_output_gen_batch_padded[selected_output_rows]
+                test_batch = test_batch[selected_test_rows]
+                sample_gts.extend([all_ground_truths[row_id] for row_id in selected_test_rows])
+            else:
+                # unpad
+                test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+                sample_gts.extend(all_ground_truths)
 
             print("validation generation end")
 

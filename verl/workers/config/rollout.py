@@ -71,7 +71,7 @@ class MultiTurnConfig(BaseConfig):
     tool_config_path: Optional[str] = None
     max_user_turns: Optional[int] = None
     max_parallel_calls: int = 1
-    max_tool_response_length: int = 256
+    max_tool_response_length: Optional[int] = 256
     tool_response_truncate_side: str = "middle"
     use_inference_chat_template: bool = False
     tokenization_sanity_check_mode: str = "strict"
@@ -183,6 +183,14 @@ class RolloutConfig(BaseConfig):
     # Early termination threshold for multi-turn rollout in sglang.
     # Abort remaining requests when (1 - over_sample_rate) * total_requests are completed.
     over_sample_rate: float = 0.0
+    # Validation-only early termination threshold for agent loop rollouts.
+    # When > 0, each AgentLoopWorker returns after (1 - val_over_sample_rate)
+    # of its local validation samples complete and cancels the remaining tail.
+    val_over_sample_rate: float = 0.0
+    # Shuffle validation samples before repeat/chunk for agent-loop rollouts.
+    # This keeps metrics unchanged when val_over_sample_rate=0, but avoids
+    # assigning contiguous, same-task validation ranges to the same worker.
+    val_shuffle: bool = False
 
     prompt_length: int = 512
     response_length: int = 512

@@ -30,6 +30,7 @@ and is designed to be fully replaceable by other agent frameworks such as:
 import asyncio
 import copy
 import logging
+import math
 import os
 import random
 import time
@@ -83,6 +84,11 @@ class AgentLoopMetrics(BaseModel):
     tool_calls: float = 0.0
     compute_score: float = 0.0
     compute_teacher_logprobs: float = 0.0
+    teacher_client_generate: float = 0.0
+    teacher_client_overhead: float = 0.0
+    teacher_vllm_engine_generate: float = 0.0
+    teacher_vllm_extract_prompt_logprobs: float = 0.0
+    teacher_tensor_convert: float = 0.0
     teacher_output_align: float = 0.0
     teacher_output_pad: float = 0.0
     teacher_topk_width: int = 0
@@ -477,25 +483,53 @@ class AgentLoopWorker:
         )
 
         tasks = []
+        task_indices = []
         for i in range(len(batch)):
             trace_this_sample = i in traced_indices
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
             kwargs["_worker_slot"] = i
-            tasks.append(
-                asyncio.create_task(
-                    self._run_agent_loop(sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
-                )
+            task = asyncio.create_task(
+                self._run_agent_loop(sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
             )
+            tasks.append(task)
+            task_indices.append(i)
         t_agent_tasks = time.perf_counter()
-        outputs = await asyncio.gather(*tasks)
+        validate = batch.meta_info.get("validate", False)
+        val_over_sample_rate = float(getattr(config, "val_over_sample_rate", 0.0) or 0.0)
+        val_over_sample_rate = min(max(val_over_sample_rate, 0.0), 0.999)
+        selected_indices = list(range(len(tasks)))
+        num_preempted_by_val_oversample = 0
+        if validate and val_over_sample_rate > 0 and len(tasks) > 1:
+            target_count = max(1, math.ceil((1.0 - val_over_sample_rate) * len(tasks)))
+            task_to_index = dict(zip(tasks, task_indices, strict=True))
+            pending = set(tasks)
+            outputs = []
+            selected_indices = []
+            while pending and len(outputs) < target_count:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    outputs.append(task.result())
+                    selected_indices.append(task_to_index[task])
+                    if len(outputs) >= target_count:
+                        break
+            num_preempted_by_val_oversample = len(pending)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+        else:
+            outputs = await asyncio.gather(*tasks)
         agent_tasks_time = time.perf_counter() - t_agent_tasks
 
         t_postprocess = time.perf_counter()
-        output = self._postprocess(outputs, input_non_tensor_batch=batch.non_tensor_batch)
+        selected_indices_np = np.array(selected_indices, dtype=np.int64)
+        selected_non_tensor_batch = {key: val[selected_indices_np] for key, val in batch.non_tensor_batch.items()}
+        output = self._postprocess(outputs, input_non_tensor_batch=selected_non_tensor_batch)
         output.meta_info.setdefault("timing", {}).update(
             {
                 "agent_loop/worker_agent_tasks": agent_tasks_time,
                 "agent_loop/worker_postprocess": time.perf_counter() - t_postprocess,
+                "agent_loop/val_oversample_preempted": num_preempted_by_val_oversample,
             }
         )
         return output
@@ -813,11 +847,20 @@ class AgentLoopWorker:
                     # Non-tensor batch values arrive as 0-d numpy objects / arrays; normalize to Python.
                     routing_key = routing_value.item() if hasattr(routing_value, "item") else routing_value
             teacher_prompt_ids = self._build_teacher_prompt_ids(output, prompt_ids)
-            teacher_ids, teacher_logprobs = await self.teacher_server_manager.compute_teacher_logprobs_single(
-                sequence_ids=teacher_prompt_ids + response_ids,
-                multi_modal_data=output.multi_modal_data,
-                routing_key=routing_key,
+            teacher_ids, teacher_logprobs, teacher_timing = (
+                await self.teacher_server_manager.compute_teacher_logprobs_single(
+                    sequence_ids=teacher_prompt_ids + response_ids,
+                    multi_modal_data=output.multi_modal_data,
+                    routing_key=routing_key,
+                )
             )
+            output.metrics.teacher_client_generate = teacher_timing.get("teacher_client_generate", 0.0)
+            output.metrics.teacher_client_overhead = teacher_timing.get("teacher_client_overhead", 0.0)
+            output.metrics.teacher_vllm_engine_generate = teacher_timing.get("teacher_vllm_engine_generate", 0.0)
+            output.metrics.teacher_vllm_extract_prompt_logprobs = teacher_timing.get(
+                "teacher_vllm_extract_prompt_logprobs", 0.0
+            )
+            output.metrics.teacher_tensor_convert = teacher_timing.get("teacher_tensor_convert", 0.0)
             if teacher_prompt_ids != prompt_ids:
                 align_timing = {}
                 with simple_timer("teacher_output_align", align_timing):
@@ -1196,6 +1239,10 @@ class AgentLoopManager:
                 f"manager_concat={manager_concat_time:.2f}s "
                 f"teacher_compute_mean={timing.get('agent_loop/compute_teacher_logprobs/mean', 0.0):.2f}s "
                 f"teacher_compute_max={timing.get('agent_loop/compute_teacher_logprobs/max', 0.0):.2f}s "
+                f"teacher_engine_max={timing.get('agent_loop/teacher_vllm_engine_generate/max', 0.0):.2f}s "
+                f"teacher_extract_max={timing.get('agent_loop/teacher_vllm_extract_prompt_logprobs/max', 0.0):.2f}s "
+                f"teacher_transfer_overhead_max={timing.get('agent_loop/teacher_client_overhead/max', 0.0):.2f}s "
+                f"teacher_tensor_convert_max={timing.get('agent_loop/teacher_tensor_convert/max', 0.0):.2f}s "
                 f"teacher_pad_mean={timing.get('agent_loop/teacher_output_pad/mean', 0.0):.2f}s "
                 f"worker_postprocess_max={timing.get('agent_loop/worker_postprocess/max', 0.0):.2f}s "
                 f"worker_teacher_cat_max={timing.get('agent_loop/teacher_tensor_cat/max', 0.0):.2f}s "
@@ -1215,6 +1262,15 @@ class AgentLoopManager:
         t_tool_calls = np.array([metric["tool_calls"] for metric in flat_metrics])
         t_compute_score = np.array([metric["compute_score"] for metric in flat_metrics])
         t_compute_teacher_logprobs = np.array([metric.get("compute_teacher_logprobs", 0.0) for metric in flat_metrics])
+        t_teacher_client_generate = np.array([metric.get("teacher_client_generate", 0.0) for metric in flat_metrics])
+        t_teacher_client_overhead = np.array([metric.get("teacher_client_overhead", 0.0) for metric in flat_metrics])
+        t_teacher_vllm_engine_generate = np.array(
+            [metric.get("teacher_vllm_engine_generate", 0.0) for metric in flat_metrics]
+        )
+        t_teacher_vllm_extract_prompt_logprobs = np.array(
+            [metric.get("teacher_vllm_extract_prompt_logprobs", 0.0) for metric in flat_metrics]
+        )
+        t_teacher_tensor_convert = np.array([metric.get("teacher_tensor_convert", 0.0) for metric in flat_metrics])
         t_teacher_output_align = np.array([metric.get("teacher_output_align", 0.0) for metric in flat_metrics])
         t_teacher_output_pad = np.array([metric.get("teacher_output_pad", 0.0) for metric in flat_metrics])
         t_agent_run = np.array([metric.get("agent_run", 0.0) for metric in flat_metrics])
@@ -1237,6 +1293,11 @@ class AgentLoopManager:
         add_stats("tool_calls", t_tool_calls)
         add_stats("compute_score", t_compute_score)
         add_stats("compute_teacher_logprobs", t_compute_teacher_logprobs)
+        add_stats("teacher_client_generate", t_teacher_client_generate)
+        add_stats("teacher_client_overhead", t_teacher_client_overhead)
+        add_stats("teacher_vllm_engine_generate", t_teacher_vllm_engine_generate)
+        add_stats("teacher_vllm_extract_prompt_logprobs", t_teacher_vllm_extract_prompt_logprobs)
+        add_stats("teacher_tensor_convert", t_teacher_tensor_convert)
         add_stats("teacher_output_align", t_teacher_output_align)
         add_stats("teacher_output_pad", t_teacher_output_pad)
         add_stats("teacher_topk_width", teacher_topk_width)
@@ -1253,6 +1314,13 @@ class AgentLoopManager:
         timing["agent_loop/slowest/tool_calls"] = t_tool_calls[slowest]
         timing["agent_loop/slowest/compute_score"] = t_compute_score[slowest]
         timing["agent_loop/slowest/compute_teacher_logprobs"] = t_compute_teacher_logprobs[slowest]
+        timing["agent_loop/slowest/teacher_client_generate"] = t_teacher_client_generate[slowest]
+        timing["agent_loop/slowest/teacher_client_overhead"] = t_teacher_client_overhead[slowest]
+        timing["agent_loop/slowest/teacher_vllm_engine_generate"] = t_teacher_vllm_engine_generate[slowest]
+        timing["agent_loop/slowest/teacher_vllm_extract_prompt_logprobs"] = t_teacher_vllm_extract_prompt_logprobs[
+            slowest
+        ]
+        timing["agent_loop/slowest/teacher_tensor_convert"] = t_teacher_tensor_convert[slowest]
         timing["agent_loop/slowest/teacher_output_pad"] = t_teacher_output_pad[slowest]
         timing["agent_loop/slowest/teacher_topk_width"] = teacher_topk_width[slowest]
         timing["agent_loop/slowest/teacher_sequence_length"] = teacher_sequence_length[slowest]

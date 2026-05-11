@@ -286,6 +286,20 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
                 missing_tool_call_count_sum / tool_call_total_count_sum if tool_call_total_count_sum > 0 else 0.0
             )
             metrics["tool_call/missing_count"] = missing_tool_call_count_sum
+        breakdown_keys = {
+            "tool_schema_error_count": "schema_error",
+            "wrong_tool_name_count": "wrong_tool_name",
+            "invalid_environment_action_count": "invalid_action",
+        }
+        for source_key, metric_name in breakdown_keys.items():
+            if source_key not in batch.non_tensor_batch:
+                continue
+            count = np.asarray(batch.non_tensor_batch[source_key], dtype=np.float64)
+            count_sum = float(count.sum())
+            metrics[f"tool_call/{metric_name}_rate"] = (
+                count_sum / tool_call_total_count_sum if tool_call_total_count_sum > 0 else 0.0
+            )
+            metrics[f"tool_call/{metric_name}_count"] = count_sum
 
     return metrics
 

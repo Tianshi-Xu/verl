@@ -27,6 +27,8 @@ from verl.utils.rollout_trace import rollout_trace_op
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+TOOL_SCHEMA_ERROR_NAME = "__tool_schema_error__"
+
 
 class FunctionCall(BaseModel):
     arguments: str
@@ -106,6 +108,9 @@ class HermesToolParser(ToolParser):
                 function_calls.append(FunctionCall(name=name, arguments=json.dumps(arguments, ensure_ascii=False)))
             except Exception as e:
                 logger.error(f"Failed to decode tool call: {e}")
+                function_calls.append(
+                    FunctionCall(name=TOOL_SCHEMA_ERROR_NAME, arguments=json.dumps({"error": str(e)}))
+                )
 
         # remaing text exclude tool call tokens
         content = self.tool_call_regex.sub("", text)

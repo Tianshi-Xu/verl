@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import os
+import time
 from pprint import pprint
 from typing import Any, Callable, Optional
 
@@ -516,16 +517,25 @@ class vLLMHttpServer:
 
         # Get final response
         final_res: Optional[RequestOutput] = None
+        t_engine_generate = time.perf_counter()
         async for output in generator:
             final_res = output
+        engine_generate_time = time.perf_counter() - t_engine_generate
         assert final_res is not None
 
         extra_fields = {"global_steps": self.global_steps}
+        t_extract_prompt_logprobs = time.perf_counter()
         extract_prompt_logprobs(
             output=final_res,
             num_prompt_logprobs=sampling_params.prompt_logprobs,
             result_dict=extra_fields,
         )
+        extract_prompt_logprobs_time = time.perf_counter() - t_extract_prompt_logprobs
+        if sampling_params.prompt_logprobs is not None:
+            extra_fields["timing"] = {
+                "vllm_engine_generate": engine_generate_time,
+                "vllm_extract_prompt_logprobs": extract_prompt_logprobs_time,
+            }
         token_ids = final_res.outputs[0].token_ids
         log_probs = None
         if sampling_params.logprobs is not None:

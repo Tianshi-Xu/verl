@@ -122,6 +122,15 @@ n: 1
 # where the system will abort remaining requests when (1 - over_sample_rate) * total_requests completions are reached.
 over_sample_rate: 0
 
+# Validation-only early termination threshold for agent loop rollouts.
+# When > 0, each AgentLoopWorker returns after (1 - val_over_sample_rate) of
+# its local validation samples complete and cancels the remaining tail.
+val_over_sample_rate: 0
+
+# Shuffle validation samples before repeat/chunk for agent-loop rollouts.
+# This avoids assigning contiguous same-task ranges to the same worker.
+val_shuffle: false
+
 # Whether to wake up inference engine in multi-stage for SGLang
 # to reduce peak memory during training-rollout transition.
 # This is only effective for SGLang rollout.

@@ -1,0 +1,127 @@
+{
+  "general_skills": [
+    {
+      "skill_id": "tool_001",
+      "title": "Use Only take_action",
+      "principle": "The only valid function name is take_action. Never call functions named look, inventory, go to ..., open ..., take ..., use ..., move ..., put ..., heat ..., cool ..., or clean .... Put the environment action only inside the action argument, copied from AVAILABLE ACTIONS.",
+      "when_to_apply": "Every turn after observing the task or environment feedback."
+    },
+    {
+      "skill_id": "gen_001",
+      "title": "Choose Only Available Actions",
+      "principle": "Treat AVAILABLE ACTIONS as the complete action space. If a useful action is not listed, choose the closest listed navigation, open, examine, take, use, heat, cool, clean, or put action that advances the goal.",
+      "when_to_apply": "Before every tool call."
+    },
+    {
+      "skill_id": "gen_002",
+      "title": "Make One Concrete Progress Step",
+      "principle": "Prefer actions that change state or reveal new information: take a visible target, open an unchecked container, move to an unvisited relevant location, use the needed appliance, or place a prepared object.",
+      "when_to_apply": "When several available actions look plausible."
+    }
+  ],
+  "task_specific_skills": {
+    "pick_and_place": [
+      {
+        "skill_id": "pic_001",
+        "title": "Take Target When Visible",
+        "principle": "If the required object is visible and takeable in AVAILABLE ACTIONS, call take_action to take it immediately before exploring elsewhere.",
+        "when_to_apply": "When an available take action mentions the goal object."
+      },
+      {
+        "skill_id": "pic_002",
+        "title": "Deliver Held Target",
+        "principle": "When holding the required object and the destination is known, navigate toward the destination and use the available put or move action once. If it gives no success, do not repeat the same placement; choose a different available action that reveals progress.",
+        "when_to_apply": "After the goal object has been picked up."
+      }
+    ],
+    "look_at_obj_in_light": [
+      {
+        "skill_id": "loo_001",
+        "title": "Search New Lamp Locations",
+        "principle": "Search likely surfaces and containers for both the target object and a desklamp. Do not repeat look or examine at the same location after it gives no new object or action; move to another available location or open a new container.",
+        "when_to_apply": "Until both the target and lamp location are known."
+      },
+      {
+        "skill_id": "loo_002",
+        "title": "Use Lamp With Target",
+        "principle": "Once the target is held or co-located with a desklamp, choose the available action that uses or turns on the desklamp instead of continuing look or examine loops.",
+        "when_to_apply": "When a desklamp use action is available near the target."
+      }
+    ],
+    "clean": [
+      {
+        "skill_id": "cle_001",
+        "title": "Clean Before Placement",
+        "principle": "For clean tasks, first get the exact target, then go to a sink or basin and choose the available clean/use action before final placement.",
+        "when_to_apply": "After identifying or holding the object that must be cleaned."
+      },
+      {
+        "skill_id": "cle_002",
+        "title": "Use Likely Search Priors",
+        "principle": "If the target is not visible, first search likely surfaces for the object type, such as countertop, diningtable, sinkbasin, stoveburner, desk, or sidetable, then open unchecked cabinets and drawers. Avoid long sweeps that ignore visible likely surfaces.",
+        "when_to_apply": "When searching for the object to clean."
+      }
+    ],
+    "heat": [
+      {
+        "skill_id": "hea_001",
+        "title": "Heat Exact Target",
+        "principle": "For heat tasks, pick up the exact target object before interacting with the microwave; do not substitute similar objects.",
+        "when_to_apply": "Before moving to heating or placement."
+      },
+      {
+        "skill_id": "hea_002",
+        "title": "Microwave Then Deliver",
+        "principle": "When holding the target near a microwave, choose the listed open/place/heat actions needed to heat it, then take it from the microwave if needed, go to the destination, and put it there once. Do not loop on open/close/examine after placement.",
+        "when_to_apply": "After the target object has been found."
+      }
+    ],
+    "cool": [
+      {
+        "skill_id": "coo_001",
+        "title": "Cool Exact Target",
+        "principle": "For cool tasks, find and take the exact target object, then go to the fridge, open it if needed, and use the listed cool action before any final placement.",
+        "when_to_apply": "When the task asks for a cooled object."
+      },
+      {
+        "skill_id": "coo_002",
+        "title": "Fridge Then Final Placement",
+        "principle": "After cooling, take the object from the fridge if needed, navigate to the requested destination, and use the available put or move action once. Do not repeat put/move/examine at the destination unless the observation says the object is not there.",
+        "when_to_apply": "After picking up the object that must be cooled."
+      }
+    ],
+    "examine": [
+      {
+        "skill_id": "exa_001",
+        "title": "Carry Target To Lamp",
+        "principle": "If the examine target is found before the desklamp, take it and continue searching new locations for a desklamp. Do not repeatedly look or examine the same object when no new feedback appears.",
+        "when_to_apply": "When the target object is visible but the lamp is not solved yet."
+      },
+      {
+        "skill_id": "exa_002",
+        "title": "Use Lamp Once Ready",
+        "principle": "When the target and desklamp are both reachable, choose the available action that uses or turns on the desklamp instead of continuing exploration or repeated examine actions.",
+        "when_to_apply": "When a desklamp action is available and the target is held or nearby."
+      }
+    ]
+  },
+  "common_mistakes": [
+    {
+      "mistake_id": "err_001",
+      "description": "Using the wrong tool-call format, such as calling look, inventory, go to ..., or open ... as the function name.",
+      "why_it_happens": "The model confuses environment actions with tool names.",
+      "how_to_avoid": "Always call the single function take_action, with the chosen environment action inside the action argument."
+    },
+    {
+      "mistake_id": "err_002",
+      "description": "Looping on the same look, examine, open, close, put, move, or use action without new information or success.",
+      "why_it_happens": "The model loses track of recent feedback and repeats locally plausible actions.",
+      "how_to_avoid": "If an action gives no progress, choose a different available action that explores a new location, opens a new container, or advances object state."
+    }
+  ],
+  "metadata": {
+    "source": "tool-call adapted ALFWorld skills for verl agent loop",
+    "base_file": "claude_style_skills.json",
+    "notes": "Short action-grounded skills intended for system-prompt injection with take_action tool calling."
+  }
+}

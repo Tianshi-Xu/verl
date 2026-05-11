@@ -143,9 +143,10 @@ class LLMServerClient:
             TokenOutput | DiffusionOutput: token or diffusion output
         """
         server_id, server = await self._acquire_server(request_id)
+        inner_request_id = uuid4().hex
         try:
             output: TokenOutput = await server.generate.remote(
-                request_id=uuid4().hex,  # use new request_id for each turn
+                request_id=inner_request_id,  # use new request_id for each turn
                 prompt_ids=prompt_ids,
                 sampling_params=sampling_params,
                 image_data=image_data,
@@ -153,6 +154,12 @@ class LLMServerClient:
                 **kwargs,
             )
             return output
+        except asyncio.CancelledError:
+            try:
+                await server.abort_request.remote(inner_request_id)
+            except Exception as err:
+                logger.warning("Failed to abort cancelled rollout request %s: %s", inner_request_id, err)
+            raise
         finally:
             self._release_server(server_id)
 

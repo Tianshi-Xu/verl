@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import time
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -104,12 +105,13 @@ class AsyncTeacherLLMServerManager:
         sequence_ids: list[int],
         multi_modal_data: Optional[dict[str, Any]] = None,
         routing_key: Optional[str] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
         """Compute teacher log probabilities for a single unpadded sequence."""
         multi_modal_data = multi_modal_data or {}
         teacher_key = self._resolve_teacher_key(routing_key)
         teacher_model_config = self.teacher_model_configs[teacher_key]
         client = self.teacher_client[teacher_key]
+        t_client_generate = time.perf_counter()
         teacher_output = await client.generate(
             request_id=uuid4().hex,
             prompt_ids=sequence_ids,
@@ -117,9 +119,25 @@ class AsyncTeacherLLMServerManager:
             image_data=multi_modal_data.get("images"),
             video_data=multi_modal_data.get("videos"),
         )
+        client_generate_time = time.perf_counter() - t_client_generate
+        server_timing = teacher_output.extra_fields.get("timing", {})
         # Shapes: # S, (1 or K), where S is the response length, K is either 1 or topk depending on
         # the distillation loss settings.
+        t_tensor_convert = time.perf_counter()
         teacher_ids = torch.tensor(teacher_output.extra_fields["prompt_ids"], dtype=torch.int32)
         teacher_logprobs = torch.tensor(teacher_output.extra_fields["prompt_logprobs"])
+        tensor_convert_time = time.perf_counter() - t_tensor_convert
         assert teacher_ids.shape[0] == teacher_logprobs.shape[0] == len(sequence_ids)
-        return teacher_ids, teacher_logprobs
+        timing = {
+            "teacher_client_generate": client_generate_time,
+            "teacher_tensor_convert": tensor_convert_time,
+            "teacher_vllm_engine_generate": float(server_timing.get("vllm_engine_generate", 0.0)),
+            "teacher_vllm_extract_prompt_logprobs": float(server_timing.get("vllm_extract_prompt_logprobs", 0.0)),
+        }
+        timing["teacher_client_overhead"] = max(
+            0.0,
+            timing["teacher_client_generate"]
+            - timing["teacher_vllm_engine_generate"]
+            - timing["teacher_vllm_extract_prompt_logprobs"],
+        )
+        return teacher_ids, teacher_logprobs, timing
